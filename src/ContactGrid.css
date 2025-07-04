@@ -1,0 +1,42 @@
+.toolbar-ribbon {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 10px;
+  background: #f3f3f3;
+  border-bottom: 1px solid #ccc;
+  align-items: flex-end;
+}
+
+.ribbon-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  border-right: 1px solid #ddd;
+  padding-right: 16px;
+}
+
+.ribbon-group:last-child {
+  border-right: none;
+}
+
+.ribbon-group label {
+  font-size: 13px;
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+
+.ribbon-group select,
+.ribbon-group button,
+.ribbon-group input[type="color"] {
+  padding: 4px 6px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.ribbon-group button:hover {
+  background-color: #e6f0ff;
+}
