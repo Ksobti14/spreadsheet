@@ -16,7 +16,6 @@ import * as XLSX from "xlsx";
 import { saveAs } from "file-saver"; 
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { FaRegFilePdf } from "react-icons/fa";
 import {io} from "socket.io-client"
 const NUM_ROWS = 7000;
 const NUM_COLUMNS = 100;
@@ -57,15 +56,19 @@ type CellData = {
   formula?: string;
   fontSize?: number;
   alignment?: "left" | "center" | "right";
-   bold?: boolean;
+  bold?: boolean;
   italic?: boolean;
+  underline?: boolean; 
+  strikethrough?: boolean;
   textColor?: string;
   bgColor?: string;
   borderColor?: string;
   fontFamily?: string;
   background?: string; 
-  displayData?: string | number; // Add this
+  displayData?: string | number; 
   data?: string | number; 
+  comment?: string;
+  link?: string;  
 };
 
 type SheetData = {
@@ -75,10 +78,6 @@ const createInitialSheetData = (): CellData[][] =>
   Array.from({ length: NUM_ROWS }, () =>
     Array.from({ length: NUM_COLUMNS }, () => ({ value: "" }))
   );
-const columns: GridColumn[] = Array.from({ length: NUM_COLUMNS }, (_, i) => ({
-  title: getExcelColumnName(i),
-  id: getExcelColumnName(i),
-}));
 const getCellNumericValue = (
   col: number,
   row: number,
@@ -201,15 +200,58 @@ const evaluateFormula = (formula: string, data: CellData[][]): string => {
   }
 };
 const menuItem: React.CSSProperties = {
-  padding: "10px 16px",
+  padding: "8px 16px", // Slightly less padding for a compact menu
   textAlign: "left",
   background: "white",
   border: "none",
   cursor: "pointer",
   width: "100%",
-  fontSize: "14px",
-  whiteSpace: "nowrap"
+  fontSize: "13px", // Slightly smaller font size
+  whiteSpace: "nowrap",
+  display: "block", // Ensure buttons take full width
 };
+
+const menuDropdownStyle: React.CSSProperties = {
+  position: "absolute",
+  top: "100%",
+  left: 0,
+  backgroundColor: "#fff",
+  border: "1px solid #dadce0", // Google-like border
+  borderRadius: "4px",
+  boxShadow: "0 2px 6px rgba(60,64,67,0.15)", // Subtle shadow
+  zIndex: 1000,
+  minWidth: "160px", // Adjusted min-width
+  padding: "4px 0", // Reduced padding
+  display: "flex",
+  flexDirection: "column",
+};
+
+const subMenuDropdownStyle: React.CSSProperties = {
+  position: "absolute",
+  top: "0",
+  left: "100%", // Position to the right of the parent menu item
+  backgroundColor: "#fff",
+  border: "1px solid #dadce0",
+  borderRadius: "4px",
+  boxShadow: "0 2px 6px rgba(60,64,67,0.15)",
+  zIndex: 1001, // Higher z-index to appear above parent dropdown
+  minWidth: "160px",
+  padding: "4px 0",
+  display: "flex",
+  flexDirection: "column",
+};
+
+const topBarButtonStyle: React.CSSProperties = {
+  padding: "6px 10px", // Smaller padding for top bar buttons
+  background: "transparent", // Transparent background
+  color: "#202124", // Dark text color
+  border: "none",
+  borderRadius: "4px",
+  cursor: "pointer",
+  fontSize: "13px", // Smaller font size
+  fontWeight: 500,
+};
+
 const FormulaOverlay: React.FC<{
   location: Item;
   value: string;
@@ -287,7 +329,7 @@ const [redoStack, setRedoStack] = useState<SheetData[]>([]);
   const [editingSheetName, setEditingSheetName] = useState<string | null>(null);
   const [newSheetName, setNewSheetName] = useState<string>("");
   const [saveLoadSheetName, setSaveLoadSheetName] = useState<string>('');
-const gridRef = useRef<any>(null); // you can define a better type if available
+const gridRef = useRef<any>(null); 
 
 
   const activeCell = useRef<Item | null>(null);
@@ -321,10 +363,14 @@ const gridRef = useRef<any>(null); // you can define a better type if available
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
       const cell = currentSheetData[row]?.[col] ?? { value: "" };
-      let displayValue = cell.value;
-      if (cell.formula) {
-        displayValue = evaluateFormula(cell.formula, currentSheetData);
+      let displayValue = cell.formula ? evaluateFormula(cell.formula, currentSheetData) : cell.value;
+      // If displayValue is an object, convert it to a string for display
+      if (typeof displayValue === 'object' && displayValue !== null) {
+        displayValue = JSON.stringify(displayValue);
+      } else if (displayValue === undefined || displayValue === null) {
+        displayValue = "";
       }
+
 
       const inHighlight =
         highlightRange &&
@@ -361,7 +407,7 @@ const gridRef = useRef<any>(null); // you can define a better type if available
   sheet: activeSheet,
   row,
   col,
-  value: text,  // or `newValue.data`
+  value: text,
 });
 
     if (text.startsWith("=")) {
@@ -425,7 +471,6 @@ const gridRef = useRef<any>(null); // you can define a better type if available
     }
 
     updatedSheets[activeSheet] = currentSheetCopy;
-    console.log(`Sheet updated for [${col}, ${row}]:`, updatedSheets[activeSheet][row][col]);
     pushToUndoStack(updatedSheets);
       setFormulaInput("");
       setHighlightRange(null);
@@ -921,11 +966,21 @@ const customDrawCell = (args: any) => {
   const fontSize = cellData?.fontSize || 12;
   const isBold = cellData?.bold ? "bold" : "normal";
   const isItalic = cellData?.italic ? "italic" : "normal";
+  const isUnderline = cellData?.underline; 
+  const isStrikethrough = cellData?.strikethrough;
   const textColor = cellData?.textColor || theme.textDark;
   const bgColor = cellData?.bgColor || theme.bgCell;
   const borderColor = cellData?.borderColor || theme.borderColor;
   const fontFamily = cellData?.fontFamily || 'sans-serif'; // Get font family, default to sans-serif
-  const text = String(cell.displayData ?? "");
+  let text = String(cell.displayData ?? "");
+
+if (cell.link) {
+  text = `${text}🔗`;
+}
+if (cell.comment) {
+  text = `${text}💬`;
+}
+
 
   ctx.fillStyle = bgColor;
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
@@ -940,12 +995,10 @@ const customDrawCell = (args: any) => {
   ctx.lineTo(rect.x + rect.width, rect.y + rect.height);
   ctx.stroke();
 
-  ctx.font = `${isItalic} ${isBold} ${fontSize}px ${fontFamily}`; // Update this line
+  ctx.font = `${isItalic} ${isBold} ${fontSize}px ${fontFamily}`; 
   ctx.fillStyle = textColor;
   ctx.textBaseline = "middle";
-
-  // UI Enhancement: Adjust text padding
-  const padding = 8; // Consistent padding for text inside cells
+  const padding = 8; 
   const textMetrics = ctx.measureText(text);
   let x = rect.x + padding;
   if (alignment === "center") {
@@ -954,6 +1007,28 @@ const customDrawCell = (args: any) => {
     x = rect.x + rect.width - textMetrics.width - padding;
   }
   ctx.fillText(text, x, rect.y + rect.height / 2);
+if (isUnderline) {
+    const textWidth = textMetrics.width;
+    const textHeight = fontSize; // Approximate text height
+    const underlineY = rect.y + rect.height / 2 + textHeight / 2 + 1; // Position below text
+    ctx.beginPath();
+    ctx.strokeStyle = textColor;
+    ctx.lineWidth = 1;
+    ctx.moveTo(x, underlineY);
+    ctx.lineTo(x + textWidth, underlineY);
+    ctx.stroke();
+  }
+  if (isStrikethrough) {
+    const textWidth = textMetrics.width;
+    const textHeight = fontSize; 
+    const strikethroughY = rect.y + rect.height / 2;
+    ctx.beginPath();
+    ctx.strokeStyle = textColor;
+    ctx.lineWidth = 1;
+    ctx.moveTo(x, strikethroughY);
+    ctx.lineTo(x + textWidth, strikethroughY);
+    ctx.stroke();
+  }
 
   return true;
 };
@@ -1101,59 +1176,115 @@ const onColumnResize = useCallback((column: GridColumn, newSize: number, colInde
   for (let row = y; row < y + height; row++) {
     for (let col = x; col < x + width; col++) {
       const cell = copy[row]?.[col] ?? { value: "" };
+      // Toggle the style: if all selected cells have the style, remove it; otherwise, apply it.
       copy[row][col] = { ...cell, [key]: allHaveSame ? undefined : value };
     }
   }
 
   updated[activeSheet] = copy;
   pushToUndoStack(updated);
+  
 };
 useEffect(() => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (!selection?.current) return;
    
-    const { x, y, width, height } = selection.current.range;
-    const selected = sheets[activeSheet].slice(y, y + height).map(row =>
-      row.slice(x, x + width)
-    );
+    const { range } = selection.current;
+    const startX = Math.min(range.x, range.x + range.width - 1);
+    const endX = Math.max(range.x, range.x + range.width - 1);
+    const startY = Math.min(range.y, range.y + range.height - 1);
+    const endY = Math.max(range.y, range.y + range.height - 1);
 
-    // Ctrl+C = Copy
+    // ✅ Ctrl+C: Copy (value + background)
     if (e.ctrlKey && e.key === "c") {
       e.preventDefault();
-      setClipboardData(selected);
+      const copiedData: any[][] = [];
+      for (let row = startY; row <= endY; row++) {
+        const rowData: any[] = [];
+        for (let col = startX; col <= endX; col++) {
+          rowData.push(sheets[activeSheet][row]?.[col] ?? {
+            value: "",
+            background: "",
+          });
+        }
+        copiedData.push(rowData);
+      }
+      navigator.clipboard.writeText(JSON.stringify(copiedData));
     }
 
-    // Ctrl+X = Cut
+    // ✅ Ctrl+V: Paste (value + background)
+    if (e.ctrlKey && e.key === "v") {
+      e.preventDefault();
+      navigator.clipboard.readText().then((text) => {
+        try {
+          const copiedData = JSON.parse(text);
+          const newSheets = JSON.parse(JSON.stringify(sheets)); // deep copy
+
+          // Ensure startX and startY are captured within the closure
+          const currentRange = selection.current?.range;
+          if (!currentRange) return; // Should not happen if outer check passes
+
+          const pasteStartX = Math.min(currentRange.x, currentRange.x + currentRange.width - 1);
+          const pasteStartY = Math.min(currentRange.y, currentRange.y + currentRange.height - 1);
+
+          for (let rowOffset = 0; rowOffset < copiedData.length; rowOffset++) {
+            for (let colOffset = 0; colOffset < copiedData[rowOffset].length; colOffset++) {
+              const targetRow = pasteStartY + rowOffset;
+              const targetCol = pasteStartX + colOffset;
+              if (newSheets[activeSheet][targetRow] && newSheets[activeSheet][targetRow][targetCol]) {
+                newSheets[activeSheet][targetRow][targetCol] = {
+                  fontSize: 14,
+                  bold: false,
+                  italic: false,
+                  underline: false,
+                  strikethrough: false, // Ensure default for strikethrough
+                  alignment: "left", 
+                  ...copiedData[rowOffset][colOffset], // paste value + background
+                };
+              }
+            }
+          }
+          pushToUndoStack(sheets);
+          setSheets(newSheets);
+        } catch (err) {
+          console.warn("Invalid clipboard format");
+        }
+      });
+    }
+
+    // ✅ Ctrl+X: Cut (copy + clear value + background)
     if (e.ctrlKey && e.key === "x") {
       e.preventDefault();
-      setClipboardData(selected);
+      const copiedData: any[][] = [];
+      const newSheets = JSON.parse(JSON.stringify(sheets));
 
-      const copy = sheets[activeSheet].map(r => [...r]);
-      for (let row = y; row < y + height; row++) {
-        for (let col = x; col < x + width; col++) {
-          copy[row][col] = { value: "" };
+      for (let row = startY; row <= endY; row++) {
+        const rowData: any[] = [];
+        for (let col = startX; col <= endX; col++) {
+          const cell = newSheets[activeSheet][row]?.[col] ?? {
+            value: "",
+            background: "",
+          };
+          rowData.push(cell);
+
+          // Clear the cell
+          newSheets[activeSheet][row][col] = {
+            value: "",
+            background: "",
+            fontSize: 14,
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false, // Ensure default for strikethrough
+            alignment: "left", 
+          };
         }
-      }
-      const updated = { ...sheets, [activeSheet]: copy };
-      pushToUndoStack(updated);
-    }
-
-    // Ctrl+V = Paste
-    if (e.ctrlKey && e.key === "v" && clipboardData) {
-      e.preventDefault();
-
-      const copy = sheets[activeSheet].map(r => [...r]);
-      for (let row = 0; row < clipboardData.length; row++) {
-        for (let col = 0; col < clipboardData[row].length; col++) {
-          if (copy[y + row] && copy[y + row][x + col]) {
-            copy[y + row][x + col] = { ...clipboardData[row][col] };
-          }
-        }
+        copiedData.push(rowData);
       }
 
-      const updated = { ...sheets, [activeSheet]: copy };
-      pushToUndoStack(updated);
-      
+      navigator.clipboard.writeText(JSON.stringify(copiedData));
+      pushToUndoStack(sheets);
+      setSheets(newSheets);
     }
   };
 }, [selection, sheets, activeSheet, clipboardData]);
@@ -1169,11 +1300,7 @@ useEffect(() => {
       return updated;
     });
   };
-
-  // Add the listener
   socket.on("cell-edit", handleCellEdit);
-
-  // Remove listener on unmount
   return () => {
     socket.off("cell-edit", handleCellEdit);
   };
@@ -1181,13 +1308,17 @@ useEffect(() => {
 
 useEffect(() => {
   const handleClick = () => {
+    // Only append cell reference if formula input is active and a range is being selected
     if (
       formulaInput.startsWith("=") &&
-      selecting.current
+      selecting.current &&
+      activeCell.current && // Ensure an active cell is selected
+      (selection.columns.length > 0 || selection.rows.length > 0 || selection.current?.range) // Corrected access to selection.columns and selection.rows
     ) {
       const ref = getCellName(selecting.current.x, selecting.current.y);
       setFormulaInput((prev) => {
-        if (prev.includes(ref)) return prev;
+        // Prevent appending if the reference is already part of the formula or if it's the start of a new argument
+        if (prev.includes(ref) && !prev.endsWith("(") && !prev.endsWith(",")) return prev;
         const insert = prev.endsWith("(") || prev.endsWith(",") ? ref : `,${ref}`;
         return prev + insert;
       });
@@ -1196,7 +1327,9 @@ useEffect(() => {
 
   window.addEventListener("mousedown", handleClick);
   return () => window.removeEventListener("mousedown", handleClick);
-}, [formulaInput]);
+}, [formulaInput, selection]); // Add selection to dependencies
+
+
 const handleExportTSV = () => {
   const data = sheets[activeSheet];
   const rows = data.map(row =>
@@ -1278,22 +1411,584 @@ for (let r = 0; r < data.length; r++) {
   doc.save(filename);
 };
 
+// New state for dropdowns and input modals
+const [showFileDropdown, setShowFileDropdown] = useState(false);
+const [showEditDropdown, setShowEditDropdown] = useState(false);
+const [showInsertDropdown, setShowInsertDropdown] = useState(false);
+const [showFormatDropdown, setShowFormatDropdown] = useState(false);
+// Removed showDataDropdown and showHelpDropdown states
+
+const [showImportDropdown, setShowImportDropdown] = useState(false);
+const [showExportDropdown, setShowExportDropdown] = useState(false);
+
+const [showLinkInput, setShowLinkInput] = useState(false);
+const [linkValue, setLinkValue] = useState('');
+const [showCommentInput, setShowCommentInput] = useState(false);
+const [commentValue, setCommentValue] = useState('');
+
+// Functions for Edit menu actions
+const handleInsertRowAbove = () => {
+  if (!selection.current) {
+    alert("Please select a cell to insert a row.");
+    return;
+  }
+  insertRowAt(selection.current.range.y);
+  setShowEditDropdown(false);
+};
+
+const handleInsertRowBelow = () => {
+  if (!selection.current) {
+    alert("Please select a cell to insert a row.");
+    return;
+  }
+  insertRowAt(selection.current.range.y + selection.current.range.height);
+  setShowEditDropdown(false);
+};
+
+const handleDeleteSelectedRows = () => {
+  if (selection.rows.length === 0) { // Check length directly
+    alert("Please select rows to delete.");
+    return;
+  }
+  // Get all selected row indices
+  const selectedRowIndices: number[] = Array.from(selection.rows); // Use Array.from to iterate
+
+  // Sort in descending order to avoid index issues during deletion
+  selectedRowIndices.sort((a, b) => b - a);
+
+  const updatedSheets = { ...sheets };
+  let currentSheetCopy = sheets[activeSheet].map((r) => [...r]);
+
+  selectedRowIndices.forEach(rowIndex => {
+    currentSheetCopy.splice(rowIndex, 1);
+  });
+
+  // Add empty rows at the bottom to maintain NUM_ROWS
+  while (currentSheetCopy.length < NUM_ROWS) {
+    currentSheetCopy.push(Array(NUM_COLUMNS).fill({ value: "" }));
+  }
+
+  updatedSheets[activeSheet] = currentSheetCopy;
+  pushToUndoStack(updatedSheets);
+  setShowEditDropdown(false);
+  setSelection({ // Clear selection after deletion
+    columns: CompactSelection.empty(),
+    rows: CompactSelection.empty(),
+  });
+};
+
+
+// Functions for Insert menu actions
+const handleInsertLink = () => {
+  if (!activeCell.current) {
+    alert("Please select a cell to insert a link.");
+    return;
+  }
+  setShowLinkInput(true);
+  setShowInsertDropdown(false); // Close dropdown after selection
+};
+
+const handleInsertComment = () => {
+  if (!activeCell.current) {
+    alert("Please select a cell to insert a comment.");
+    return;
+  }
+  setShowCommentInput(true);
+  setShowInsertDropdown(false); // Close dropdown after selection
+};
+
+const applyLinkToCell = () => {
+  if (!activeCell.current || !linkValue.trim()) {
+    alert("Please enter a valid link.");
+    return;
+  }
+  const [col, row] = activeCell.current;
+  const updated = { ...sheets };
+  const copy = updated[activeSheet].map((r) => [...r]);
+  const cell = copy[row][col];
+  copy[row][col] = {
+    ...cell,
+    link: linkValue.trim(),
+  };
+  updated[activeSheet] = copy;
+  pushToUndoStack(updated);
+  setLinkValue('');
+  setShowLinkInput(false);
+};
+
+const applyCommentToCell = () => {
+  if (!activeCell.current || !commentValue.trim()) {
+    alert("Please enter a valid comment.");
+    return;
+  }
+  const [col, row] = activeCell.current;
+  const updated = { ...sheets };
+  const copy = updated[activeSheet].map((r) => [...r]);
+  const cell = copy[row][col];
+  copy[row][col] = {
+    ...cell,
+    comment: commentValue.trim(),
+  };
+  updated[activeSheet] = copy;
+  pushToUndoStack(updated);
+  setCommentValue('');
+  setShowCommentInput(false);
+};
+
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', fontFamily: 'Roboto, sans-serif', color: '#202124' }}>
+      {/* Top Bar - Google Sheets like */}
       <div style={{
-        position: "relative",
-        padding: "5px",
-        background: "#f3f3f3",
+        backgroundColor: '#fff',
+        borderBottom: '1px solid #dadce0',
+        padding: '8px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
         flexShrink: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between", 
-        flexWrap: "wrap",
-        marginRight:"50px"
+        boxShadow: '0 1px 2px 0 rgba(60,64,67,0.08)',
       }}>
-        
-        <div style={{ display: "flex", alignItems: "center", minWidth: "300px" }}>
+        {/* Left Section: Logo, Title, Menu Bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          {/* Logo Placeholder */}
+          <span style={{ fontSize: '24px', color: '#1a73e8', fontWeight: 'bold' }}>
+            Sheets
+          </span>
+          {/* Spreadsheet Name Input */}
+          <input
+            type="text"
+            placeholder="Untitled spreadsheet"
+            value={saveLoadSheetName}
+            onChange={(e) => setSaveLoadSheetName(e.target.value)}
+            style={{
+              padding: '6px 10px',
+              borderRadius: '4px',
+              border: '1px solid #dadce0',
+              fontSize: '15px',
+              fontWeight: 500,
+              color: '#202124',
+              width: '200px',
+            }}
+          />
+
+          {/* Menu Bar */}
+          <div style={{ display: 'flex', gap: '2px', marginLeft: '20px' }}>
+            {/* File Menu */}
+            <div 
+              style={{ position: "relative" }}
+              onMouseEnter={() => setShowFileDropdown(true)}
+              onMouseLeave={() => { setShowFileDropdown(false); setShowImportDropdown(false); setShowExportDropdown(false); }}
+            >
+              <button style={topBarButtonStyle}>File</button>
+              {showFileDropdown && (
+                <div style={menuDropdownStyle}>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={saveSheetData} style={menuItem}>Save</button>
+                  <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }}></div>
+                  
+                  {/* Import Sub-menu */}
+                  <div 
+                    style={{ position: "relative" }}
+                    onMouseEnter={() => setShowImportDropdown(true)}
+                    onMouseLeave={() => setShowImportDropdown(false)}
+                  >
+                    <button style={menuItem}>Import</button> {/* Right arrow for sub-menu */}
+                    {showImportDropdown && (
+                      <div style={subMenuDropdownStyle}>
+                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} style={menuItem}>
+                          Import XLSX
+                          <input type="file" accept=".xlsx" onChange={importFromExcel} style={{ display: "none" }} />
+                        </label>
+                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} style={menuItem}>
+                          Import JSON
+                          <input type="file" accept="application/json" onChange={handleImportFromJSON} style={{ display: "none" }} />
+                        </label>
+                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} style={menuItem}>
+                          Import CSV
+                          <input type="file" accept=".csv" onChange={importFromCSV} style={{ display: "none" }} />
+                        </label>
+                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} style={menuItem}>
+                          Import ODS
+                          <input type="file" accept=".ods" onChange={handleODSImport} style={{ display: "none" }} />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Export Sub-menu */}
+                  <div 
+                    style={{ position: "relative" }}
+                    onMouseEnter={() => setShowExportDropdown(true)}
+                    onMouseLeave={() => setShowExportDropdown(false)}
+                  >
+                    <button style={menuItem}>Export</button> 
+                    {showExportDropdown && (
+                      <div style={subMenuDropdownStyle}>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleExportXLSX} style={menuItem}>Export as XLSX</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleExportToJSON} style={menuItem}>Export as JSON</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={exportToCSV} style={menuItem}>Export as CSV</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleODSExport} style={menuItem}>Export as ODS</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleExportTSV} style={menuItem}>Export as TSV</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleExportPDF} style={menuItem}>Export as PDF</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Edit Menu */}
+            <div 
+              style={{ position: "relative" }}
+              onMouseEnter={() => setShowEditDropdown(true)}
+              onMouseLeave={() => setShowEditDropdown(false)}
+            >
+              <button style={topBarButtonStyle}>Edit</button>
+              {showEditDropdown && (
+                <div style={menuDropdownStyle}>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleUndo} disabled={undoStack.length === 0} style={{...menuItem, opacity: undoStack.length === 0 ? 0.5 : 1}}>Undo</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleRedo} disabled={redoStack.length === 0} style={{...menuItem, opacity: redoStack.length === 0 ? 0.5 : 1}}>Redo</button>
+                  <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }}></div>
+                  {/* Removed: Cut, Copy, Paste */}
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleInsertRowAbove} style={menuItem}>Insert Row Above</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleInsertRowBelow} style={menuItem}>Insert Row Below</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleDeleteSelectedRows} style={menuItem}>Delete Selected Rows</button>
+                </div>
+              )}
+            </div>
+
+            {/* Insert Menu */}
+            <div 
+              style={{ position: "relative" }}
+              onMouseEnter={() => setShowInsertDropdown(true)}
+              onMouseLeave={() => setShowInsertDropdown(false)}
+            >
+              <button style={topBarButtonStyle}>Insert</button>
+              {showInsertDropdown && (
+                <div style={menuDropdownStyle}>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleInsertLink} style={menuItem}>Link</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleInsertComment} style={menuItem}>Comment</button>
+                  {/* Removed Row above and Row below */}
+                </div>
+              )}
+            </div>
+            <div 
+              style={{ position: "relative" }}
+              onMouseEnter={() => setShowFormatDropdown(true)}
+              onMouseLeave={() => setShowFormatDropdown(false)}
+            >
+              <button style={topBarButtonStyle}>Format</button>
+              {showFormatDropdown && (
+                <div style={menuDropdownStyle}>
+                  {/* These were moved to the main toolbar */}
+                  <div style={{ padding: '8px 16px', fontWeight: 'bold', fontSize: '13px', color: '#5f6368' }}>Text Styles</div>
+                  <select
+                    onChange={(e) => applyStyleToRange("fontSize",parseInt(e.target.value))}
+                    style={{...menuItem, width: 'calc(100% - 16px)', margin: '4px 8px'}}
+                  >
+                    <option value="">Font Size</option>
+                    {[10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32].map(size => (
+                      <option key={size} value={size}>{size}px</option>
+                    ))}
+                  </select>
+                  <select
+                    onChange={(e) => applyStyleToRange("fontFamily", e.target.value)}
+                    style={{...menuItem, width: 'calc(100% - 16px)', margin: '4px 8px'}}
+                    value={selection?.current ? sheets[activeSheet]?.[selection.current.range.y]?.[selection.current.range.x]?.fontFamily || 'Arial, sans-serif' : 'Arial, sans-serif'}
+                  >
+                    <option value="">Font Family</option>
+                    <option value="Arial, sans-serif">Arial</option>
+                    <option value="Helvetica, sans-serif">Helvetica</option>
+                    <option value="Verdana, sans-serif">Verdana</option>
+                    <option value="Tahoma, sans-serif">Tahoma</option>
+                    <option value="Trebuchet MS, sans-serif">Trebuchet MS</option>
+                    <option value="Georgia, serif">Georgia</option>
+                    <option value="Times New Roman, serif">Times New Roman</option>
+                    <option value="Courier New, monospace">Courier New</option>
+                    <option value="Lucida Console, monospace">Lucida Console</option>
+                  </select>
+                  <div style={{ display: "flex", gap: "2px", padding: '4px 8px' }}>
+                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={() => applyStyleToRange("bold",true)} style={{...topBarButtonStyle, fontWeight: "bold", border: '1px solid #dadce0'}}>B</button>
+                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={() => applyStyleToRange("italic",true)} style={{...topBarButtonStyle, fontStyle: "italic", border: '1px solid #dadce0'}}>I</button>
+                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={() => applyStyleToRange("underline",true)} style={{...topBarButtonStyle, textDecoration: "underline", border: '1px solid #dadce0'}}>U</button>
+                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={() => applyStyleToRange("strikethrough",true)} style={{...topBarButtonStyle, textDecoration: "line-through", border: '1px solid #dadce0'}}>S</button>
+                  </div>
+                  <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }}></div>
+                  <div style={{ padding: '8px 16px', fontWeight: 'bold', fontSize: '13px', color: '#5f6368' }}>Colors</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: '4px 8px' }}>
+                    <label style={{ fontSize: "12px", fontWeight: 500 }}>Text:</label>
+                    <input type="color" onChange={(e) => applyStyleToRange("textColor", e.target.value)} style={{ width: "24px", height: "24px", border: "none", borderRadius: "50%", cursor: "pointer" }} />
+                    <label style={{ fontSize: "12px", fontWeight: 500 }}>Fill:</label>
+                    <input type="color" onChange={(e) => applyStyleToRange("bgColor", e.target.value)} style={{ width: "24px", height: "24px", border: "none", borderRadius: "50%", cursor: "pointer" }} />
+                    <label style={{ fontSize: "12px", fontWeight: 500 }}>Border:</label>
+                    <input type="color" onChange={(e) => applyStyleToRange("borderColor", e.target.value)} style={{ width: "24px", height: "24px", border: "none", borderRadius: "50%", cursor: "pointer" }} />
+                  </div>
+                  <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }}></div>
+                  <div style={{ padding: '8px 16px', fontWeight: 'bold', fontSize: '13px', color: '#5f6368' }}>Alignment</div>
+                  <select
+                    onChange={(e) => applyStyleToRange("alignment",e.target.value as "left" | "center" | "right")}
+                    style={{...menuItem, width: 'calc(100% - 16px)', margin: '4px 8px'}}
+                  >
+                    <option value="left">Left</option>
+                    <option value="center">Center</option>
+                    <option value="right">Right</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Formatting Toolbar */}
+      <div style={{
+        backgroundColor: '#f8f9fa',
+        borderBottom: '1px solid #dadce0',
+        padding: '8px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: '10px',
+        flexShrink: 0,
+      }}>
+        {/* Undo/Redo Buttons */}
+        <button
+            onClick={handleUndo}
+            disabled={undoStack.length === 0}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            style={{
+                padding: "6px 10px",
+                background: "transparent",
+                color: "#202124",
+                border: "1px solid #dadce0",
+                borderRadius: "4px",
+                cursor: "pointer",
+                opacity: undoStack.length === 0 ? 0.5 : 1,
+                fontSize: "18px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+            }}
+        >
+            &#x21BA;
+        </button>
+        <button
+            onClick={handleRedo}
+            disabled={redoStack.length === 0}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            style={{
+                padding: "6px 10px",
+                background: "transparent",
+                color: "#202124",
+                border: "1px solid #dadce0",
+                borderRadius: "4px",
+                cursor: "pointer",
+                opacity: redoStack.length === 0 ? 0.5 : 1,
+                fontSize: "18px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+            }}
+        >
+            &#x21BB;
+        </button>
+
+        <div style={{ width: '1px', height: '24px', backgroundColor: '#dadce0', margin: '0 5px' }}></div> {/* Divider */}
+
+        {/* Font Family */}
+        <select
+          onChange={(e) => applyStyleToRange("fontFamily", e.target.value)}
+          style={{
+            padding: "6px 10px",
+            borderRadius: "4px",
+            border: "1px solid #dadce0",
+            minWidth: "120px",
+            fontSize: '13px',
+            color: '#202124',
+            backgroundColor: 'white',
+          }}
+          value={selection?.current ? sheets[activeSheet]?.[selection.current.range.y]?.[selection.current.range.x]?.fontFamily || 'Arial, sans-serif' : 'Arial, sans-serif'}
+        >
+          <option value="Arial, sans-serif">Arial</option>
+          <option value="Helvetica, sans-serif">Helvetica</option>
+          <option value="Verdana, sans-serif">Verdana</option>
+          <option value="Tahoma, sans-serif">Tahoma</option>
+          <option value="Trebuchet MS, sans-serif">Trebuchet MS</option>
+          <option value="Georgia, serif">Georgia</option>
+          <option value="Times New Roman, serif">Times New Roman</option>
+          <option value="Courier New, monospace">Courier New</option>
+          <option value="Lucida Console, monospace">Lucida Console</option>
+        </select>
+
+        {/* Font Size */}
+        <select
+          onChange={(e) => applyStyleToRange("fontSize",parseInt(e.target.value))}
+          style={{
+            padding: "6px 10px",
+            borderRadius: "4px",
+            border: "1px solid #dadce0",
+            minWidth: "70px",
+            fontSize: '13px',
+            color: '#202124',
+            backgroundColor: 'white',
+          }}
+        >
+          {[10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32].map(size => (
+            <option key={size} value={size}>{size}px</option>
+          ))}
+        </select>
+
+        <div style={{ width: '1px', height: '24px', backgroundColor: '#dadce0', margin: '0 5px' }}></div> {/* Divider */}
+
+        {/* Font Styles (Bold, Italic, Underline, Strikethrough) */}
+        <button
+          onClick={() => applyStyleToRange("bold",true)}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          style={{
+            ...topBarButtonStyle,
+            fontWeight: "bold",
+            border: '1px solid #dadce0',
+            fontSize: '16px',
+          }}
+        >B</button>
+        <button
+          onClick={() => applyStyleToRange("italic",true)}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          style={{
+            ...topBarButtonStyle,
+            fontStyle: "italic",
+            border: '1px solid #dadce0',
+            fontSize: '16px',
+          }}
+        >I</button>
+        <button
+          onClick={() => applyStyleToRange("underline",true)} 
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          style={{
+            ...topBarButtonStyle,
+            textDecoration: "underline",
+            border: '1px solid #dadce0',
+            fontSize: '16px',
+          }}
+        >U</button>
+        <button
+          onClick={() => applyStyleToRange("strikethrough",true)} 
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          style={{
+            ...topBarButtonStyle,
+            textDecoration: "line-through",
+            border: '1px solid #dadce0',
+            fontSize: '16px',
+          }}
+        >S</button>
+
+        <div style={{ width: '1px', height: '24px', backgroundColor: '#dadce0', margin: '0 5px' }}></div> {/* Divider */}
+
+        {/* Text Color */}
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 500, color: '#5f6368' }}>Text:</label>
+          <input
+            type="color"
+            onChange={(e) => applyStyleToRange("textColor", e.target.value)}
+            style={{
+              width: "28px",
+              height: "28px",
+              border: "1px solid #dadce0",
+              borderRadius: "4px",
+              cursor: "pointer",
+              backgroundColor: 'white',
+            }}
+          />
+        </div>
+        {/* Background Color */}
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 500, color: '#5f6368' }}>Fill:</label>
+          <input
+            type="color"
+            onChange={(e) => applyStyleToRange("bgColor", e.target.value)}
+            style={{
+              width: "28px",
+              height: "28px",
+              border: "1px solid #dadce0",
+              borderRadius: "4px",
+              cursor: "pointer",
+              backgroundColor: 'white',
+            }}
+          />
+        </div>
+        {/* Border Color */}
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 500, color: '#5f6368' }}>Border:</label>
+          <input
+            type="color"
+            onChange={(e) => applyStyleToRange("borderColor", e.target.value)}
+            style={{
+              width: "28px",
+              height: "28px",
+              border: "1px solid #dadce0",
+              borderRadius: "4px",
+              cursor: "pointer",
+              backgroundColor: 'white',
+            }}
+          />
+        </div>
+
+        <div style={{ width: '1px', height: '24px', backgroundColor: '#dadce0', margin: '0 5px' }}></div> {/* Divider */}
+
+        {/* Alignment */}
+        <select
+          onChange={(e) => applyStyleToRange("alignment",e.target.value as "left" | "center" | "right")}
+          style={{
+            padding: "6px 10px",
+            borderRadius: "4px",
+            border: "1px solid #dadce0",
+            minWidth: "90px",
+            fontSize: '13px',
+            color: '#202124',
+            backgroundColor: 'white',
+          }}
+        >
+          <option value="left">Left</option>
+          <option value="center">Center</option>
+          <option value="right">Right</option>
+        </select>
+      </div>
+
+
+      {/* Formula Bar */}
+      <div style={{
+        backgroundColor: '#f8f9fa',
+        borderBottom: '1px solid #dadce0',
+        padding: '8px 16px',
+        display: 'flex',
+        flexDirection: 'column', /* Changed to column to stack elements */
+        alignItems: 'flex-start', /* Align items to the start for better stacking */
+        flexShrink: 0,
+        position: 'relative', /* Added for positioning suggestions */
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}> {/* New wrapper for input and cell ref */}
+          {/* Cell Reference Display */}
+          <div style={{ 
+            minWidth: '60px', 
+            fontWeight: 'bold', 
+            fontSize: '14px', 
+            color: '#5f6368', 
+            marginRight: '10px',
+            padding: '4px 8px',
+            border: '1px solid #dadce0',
+            borderRadius: "4px",
+            backgroundColor: '#fff',
+            textAlign: 'center',
+          }}>
+            {activeCell.current ? getCellName(activeCell.current[0], activeCell.current[1]) : 'A1'}
+          </div>
+          {/* Formula Input */}
           <input
             value={formulaInput}
             onChange={(e) => handleFormulaChange(e.target.value)}
@@ -1301,7 +1996,8 @@ for (let r = 0; r < data.length; r++) {
               updateSuggestions(formulaInput);
             }}
             onBlur={() => {
-              setShowSuggestions(false);
+              // Delay hiding suggestions to allow click on suggestion
+              setTimeout(() => setShowSuggestions(false), 100);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && activeCell.current) {
@@ -1314,297 +2010,126 @@ for (let r = 0; r < data.length; r++) {
                 });
               }
             }}
-            placeholder="Type formula"
-            style={{ width: "200px", padding: "4px", marginRight: "10px" }} 
+            placeholder="Enter formula or text"
+            style={{ 
+              flexGrow: 1, 
+              padding: "8px 12px", 
+              border: "1px solid #dadce0", 
+              borderRadius: "4px", 
+              fontSize: "14px",
+              outline: 'none',
+              boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.06)',
+            }} 
           />
-          {formulaError && (
-            <div style={{ color: "red", fontSize: "14px", padding: "4px 0", marginLeft: "10px" }}>
-              {formulaError}
-            </div>
-          )}
-
-          <div style={{
-  display: "flex",
-  alignItems: "center",
-  flexWrap: "wrap",
-  gap: "16px",
-  backgroundColor: "#f5f5f5",
-  padding: "10px 15px",
-  borderRadius: "6px",
-  boxShadow: "0 2px 6px rgba(0,0,0,0.1)",
-}}>
-
-  {/* Font Settings */}
-  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px" }}>
-    <label style={{ fontSize: "12px", fontWeight: 500 }}>Font Size</label>
-    <select
-      onChange={(e) => applyStyleToRange("fontSize",parseInt(e.target.value))}
-      style={{
-        padding: "4px 8px",
-        borderRadius: "4px",
-        border: "1px solid #ccc",
-        minWidth: "80px"
-      }}
-    >
-      {[10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32].map(size => (
-        <option key={size} value={size}>{size}px</option>
-      ))}
-    </select>
-  </div>
-<div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px" }}>
-    <label style={{ fontSize: "12px", fontWeight: 500 }}>Font Family</label>
-    <select
-      onChange={(e) => applyStyleToRange("fontFamily", e.target.value)}
-      style={{
-        padding: "4px 8px",
-        borderRadius: "4px",
-        border: "1px solid #ccc",
-        minWidth: "120px" // Adjust width as needed
-      }}
-     
-      value={selection?.current ? sheets[activeSheet]?.[selection.current.range.y]?.[selection.current.range.x]?.fontFamily || 'Arial, sans-serif' : 'Arial, sans-serif'}
-    >
-      <option value="Arial, sans-serif">Arial</option>
-      <option value="Helvetica, sans-serif">Helvetica</option>
-      <option value="Verdana, sans-serif">Verdana</option>
-      <option value="Tahoma, sans-serif">Tahoma</option>
-      <option value="Trebuchet MS, sans-serif">Trebuchet MS</option>
-      <option value="Georgia, serif">Georgia</option>
-      <option value="Times New Roman, serif">Times New Roman</option>
-      <option value="Courier New, monospace">Courier New</option>
-      <option value="Lucida Console, monospace">Lucida Console</option>
-      ZY
-      {/* Add more font options as desired */}
-    </select>
-  </div>
-  {/* Text Alignment */}
-  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px" }}>
-    <label style={{ fontSize: "12px", fontWeight: 500 }}>Alignment</label>
-    <select
-      onChange={(e) => applyStyleToRange("alignment",e.target.value as "left" | "center" | "right")}
-      style={{
-        padding: "4px 8px",
-        borderRadius: "4px",
-        border: "1px solid #ccc",
-        minWidth: "100px"
-      }}
-    >
-      <option value="left">Left</option>
-      <option value="center">Center</option>
-      <option value="right">Right</option>
-    </select>
-  </div>
-
-  {/* Font Style */}
-  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-    <button
-      onClick={() => applyStyleToRange("bold",true)}
-      style={{
-        fontWeight: "bold",
-        padding: "6px 12px",
-        borderRadius: "4px",
-        border: "1px solid #ccc",
-        background: "#fff",
-        cursor: "pointer"
-      }}
-    >B</button>
-    <button
-      onClick={() => applyStyleToRange("italic",true)}
-      style={{
-        fontStyle: "italic",
-        padding: "6px 12px",
-        borderRadius: "4px",
-        border: "1px solid #ccc",
-        background: "#fff",
-        cursor: "pointer"
-      }}
-    >I</button>
-  </div>
-
-  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
-    <label style={{ fontSize: "12px", fontWeight: 500 }}>Text Color</label>
-    <div style={{ position: "relative" }}>
-      <input
-        type="color"
-        onChange={(e) => applyStyleToRange("textColor", e.target.value)}
-        style={{
-          width: "32px",
-          height: "32px",
-          border: "none",
-          borderRadius: "50%",
-          cursor: "pointer",
-          boxShadow: "0 0 4px rgba(0,0,0,0.2)"
-        }}
-      />
-    </div>
-  </div>
-  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
-    <label style={{ fontSize: "12px", fontWeight: 500 }}>Background</label>
-    <input
-      type="color"
-      onChange={(e) => applyStyleToRange("bgColor", e.target.value)}
-      style={{
-        width: "32px",
-        height: "32px",
-        border: "none",
-        borderRadius: "50%",
-        cursor: "pointer",
-        boxShadow: "0 0 4px rgba(0,0,0,0.2)"
-      }}
-    />
-  </div>
-
-  {/* Border Color */}
-  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
-    <label style={{ fontSize: "12px", fontWeight: 500 }}>Border</label>
-    <input
-      type="color"
-      onChange={(e) => applyStyleToRange("borderColor", e.target.value)}
-      style={{
-        width: "32px",
-        height: "32px",
-        border: "none",
-        borderRadius: "50%",
-        cursor: "pointer",
-        boxShadow: "0 0 4px rgba(0,0,0,0.2)"
-      }}
-    />
-  </div>
-</div>
-
-          {showSuggestions && (
-            <div
-              style={{
-                position: "absolute",
-                background: "white",
-                border: "1px solid #ccc",
-                borderRadius: "4px",
-                zIndex: 1000,
-                width: "200px",
-                marginTop: "1px",
-                top: "100%",
-                left: 0,
-              }}
-            >
-              {suggestions.map((suggestion, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => {
-                    setFormulaInput(suggestion);
-                    setShowSuggestions(false);
-                  }}
-                  style={{
-                    padding: "6px 8px",
-                    cursor: "pointer",
-                    borderBottom: idx === suggestions.length - 1 ? "none" : "1px solid #eee",
-                    backgroundColor: "#fff",
-                  }}
-                  onMouseDown={(e) => e.preventDefault()}
-                >
-                  {suggestion}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        {formulaError && (
+          <div style={{ color: "red", fontSize: "12px", paddingTop: "5px", paddingLeft: "80px" }}> {/* Adjusted padding */}
+            {formulaError}
+          </div>
+        )}
+        {showSuggestions && (
+          <div
+            style={{
+              position: "absolute",
+              background: "white",
+              border: "1px solid #ccc",
+              borderRadius: "4px",
+              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
+              zIndex: 1000,
+              width: "calc(100% - 100px)", /* Adjust width to match input */
+              marginTop: "4px",
+              top: 'calc(100% + 5px)', // Position below formula bar
+              left: '80px', // Adjust based on cell reference width + padding
+            }}
+          >
+            {suggestions.map((suggestion, idx) => (
+              <div
+                key={idx}
+                onClick={() => {
+                  setFormulaInput(suggestion);
+                  setShowSuggestions(false);
+                }}
+                style={{
+                  padding: "6px 8px",
+                  cursor: "pointer",
+                  borderBottom: idx === suggestions.length - 1 ? "none" : "1px solid #eee",
+                  backgroundColor: "#fff",
+                  fontSize: '13px',
+                }}
+                onMouseDown={(e) => e.preventDefault()} /* Prevent blur on click */
+              >
+                {suggestion}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Link Input Modal */}
+      {showLinkInput && (
+        <div style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          backgroundColor: "white",
+          padding: "20px",
+          borderRadius: "8px",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+          zIndex: 2000,
+          display: "flex",
+          flexDirection: "column",
+          gap: "10px",
+        }}>
+          <h3>Insert Link</h3>
           <input
             type="text"
-            placeholder="Spreadsheet Name"
-            value={saveLoadSheetName}
-            onChange={(e) => setSaveLoadSheetName(e.target.value)}
-            style={{
-              padding: '8px',
-              borderRadius: '4px',
-              border: '1px solid #ccc',
-              width: '150px'
-            }}
+            value={linkValue}
+            onChange={(e) => setLinkValue(e.target.value)}
+            placeholder="Enter URL"
+            style={{ padding: "8px", borderRadius: "4px", border: "1px solid #ccc" }}
           />
-
-          <div style={{ position: "relative" }}>
-            <button
-              onClick={() => setShowDropdown(prev => !prev)}
-              style={{
-                padding: "8px 12px",
-                background: "#007bff",
-                color: "white",
-                border: "none",
-                borderRadius: "4px",
-                cursor: "pointer"
-              }}
-            >
-              Import/Export ▾
-            </button>
-
-            {showDropdown && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: "100%",
-                  right: 0,
-                  backgroundColor: "#fff",
-                  border: "1px solid #ccc",
-                  borderRadius: "4px",
-                  boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
-                  zIndex: 1000,
-                  minWidth: "200px",
-                  padding: "8px 0",
-                  display: "flex",
-                  flexDirection: "column"
-                }}
-              >
-                <button onClick={saveSheetData} style={menuItem}>💾 Save</button>
-                <button onClick={handleExportXLSX} style={menuItem}>⬇️ Export as XLSX</button>
-                <label style={menuItem}>
-                   Import XLSX
-                  <input type="file" accept=".xlsx" onChange={importFromExcel} style={{ display: "none" }} />
-                </label>
-                <button onClick={handleExportToJSON} style={menuItem}>⬇️ Export as JSON</button>
-                <label style={menuItem}>
-                   Import JSON
-                  <input type="file" accept="application/json" onChange={handleImportFromJSON} style={{ display: "none" }} />
-                </label>
-                <button onClick={exportToCSV} style={menuItem}>⬇️ Export as CSV</button>
-                <label style={menuItem}>
-                   Import CSV
-                  <input type="file" accept=".csv" onChange={importFromCSV} style={{ display: "none" }} />
-                </label>
-                <button onClick={handleODSExport} style={menuItem}>⬇️ Export as ods</button>
-                <label style={menuItem}>
-                   Import ods
-                  <input type="file" accept=".ods" onChange={handleODSImport} style={{ display: "none" }} />
-                </label>
-                <button onClick={handleExportTSV} style={menuItem}>⬇️ Export as tsv</button>
-              </div>
-            )}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+            <button onClick={applyLinkToCell} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Apply</button>
+            <button onClick={() => setShowLinkInput(false)} style={{ padding: "8px 12px", background: "#f44336", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Cancel</button>
           </div>
-          <button onClick={handleExportPDF} >Save as PDF</button>
         </div>
-      </div>
-      <div style={{ flexGrow: 1, overflow: 'hidden' }}
-        onContextMenu={(e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const boundingRect = e.currentTarget.getBoundingClientRect();
-    const rowHeight = 25; 
-    const y = Math.floor((e.clientY - boundingRect.top) / rowHeight);
+      )}
 
-    setSelection({
-      columns: CompactSelection.empty(),
-      rows: CompactSelection.fromSingleSelection(y),
-      current: {
-        cell: [0, y],
-        range: { x: 0, y, width: NUM_COLUMNS, height: 1 },
-        rangeStack: [],
-      },
-    });
-    setContextMenu({
-      visible: true,
-      x: e.clientX,
-      y: e.clientY,
-      targetRow: y,
-    });
-  }}
->
+      {/* Comment Input Modal */}
+      {showCommentInput && (
+        <div style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          backgroundColor: "white",
+          padding: "20px",
+          borderRadius: "8px",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+          zIndex: 2000,
+          display: "flex",
+          flexDirection: "column",
+          gap: "10px",
+        }}>
+          <h3>Insert Comment</h3>
+          <textarea
+            value={commentValue}
+            onChange={(e) => setCommentValue(e.target.value)}
+            placeholder="Enter comment"
+            rows={4}
+            style={{ padding: "8px", borderRadius: "4px", border: "1px solid #ccc", minWidth: "250px" }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+            <button onClick={applyCommentToCell} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Apply</button>
+            <button onClick={() => setShowCommentInput(false)} style={{ padding: "8px 12px", background: "#f44336", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ flexGrow: 1, overflow: 'hidden' }}
+        /* Removed onContextMenu from here as requested */
+      >
         <DataEditor
           columns={columns}
           rows={NUM_ROWS}
@@ -1686,19 +2211,19 @@ for (let r = 0; r < data.length; r++) {
 
         for (let rowOffset = 0; rowOffset < copiedData.length; rowOffset++) {
           for (let colOffset = 0; colOffset < copiedData[rowOffset].length; colOffset++) {
-            const targetRow = startY + rowOffset;
-            const targetCol = startX + colOffset;
-            if (!newSheets[activeSheet][targetRow]) {
-              newSheets[activeSheet][targetRow] = [];
+            const targetRow = startY + rowOffset; // startY is accessible here
+            const targetCol = startX + colOffset; // startX is accessible here
+            if (newSheets[activeSheet][targetRow] && newSheets[activeSheet][targetRow][targetCol]) {
+              newSheets[activeSheet][targetRow][targetCol] = {
+                fontSize: 14,
+                bold: false,
+                italic: false,
+                underline: false,
+                strikethrough: false, // Ensure default for strikethrough
+                alignment: "left", 
+                ...copiedData[rowOffset][colOffset], // paste value + background
+              };
             }
-            newSheets[activeSheet][targetRow][targetCol] = {
-              fontSize: 14,
-              bold: false,
-              italic: false,
-              underline: false,
-              align: "left",
-              ...copiedData[rowOffset][colOffset], // paste value + background
-            };
           }
         }
         pushToUndoStack(sheets);
@@ -1732,7 +2257,8 @@ for (let r = 0; r < data.length; r++) {
           bold: false,
           italic: false,
           underline: false,
-          align: "left",
+          strikethrough: false, // Ensure default for strikethrough
+          alignment: "left", 
         };
       }
       copiedData.push(rowData);
@@ -1747,44 +2273,14 @@ for (let r = 0; r < data.length; r++) {
 
         />
       </div>
-      {contextMenu?.visible && (
-  <div
-    style={{
-      position: "fixed",
-      top: contextMenu.y,
-      left: contextMenu.x,
-      background: "#fff",
-      border: "1px solid #ccc",
-      borderRadius: "4px",
-      boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
-      zIndex: 9999,
-    }}
-    onContextMenu={(e) => e.preventDefault()}
-  >
-    <button style={menuItem} onClick={() => {
-      insertRowAt(contextMenu.targetRow);
-      setContextMenu(null);
-    }}> Add Row Above</button>
-
-    <button style={menuItem} onClick={() => {
-      insertRowAt(contextMenu.targetRow + 1);
-      setContextMenu(null);
-    }}>Add Row Below</button>
-
-    <button style={menuItem} onClick={() => {
-      deleteRows(contextMenu.targetRow, 1);
-      setContextMenu(null);
-    }}>Delete Row</button>
-  </div>
-)}
-
       <div style={{
         padding: "10px",
-        borderTop: "1px solid #ccc",
+        borderTop: "1px solid #dadce0", // Google-like border
         display: "flex",
         alignItems: "center",
         overflowX: "auto",
-        flexShrink: 0
+        flexShrink: 0,
+        backgroundColor: '#f8f9fa', // Light grey background
       }}>
         <div style={{ display: "flex", alignItems: "center" }}>
           {Object.keys(sheets).map((sheetName) => (
@@ -1794,12 +2290,18 @@ for (let r = 0; r < data.length; r++) {
                 padding: "8px 12px",
                 marginRight: "2px", 
                 cursor: "pointer",
-                backgroundColor: activeSheet === sheetName ? "#e0e0e0" : "#f0f0f0",
-                border: "1px solid #ccc",
-                borderRadius: "4px",
+                backgroundColor: activeSheet === sheetName ? "#e8eaed" : "transparent", // Highlight active tab
+                border: "1px solid transparent", // Transparent border
+                borderBottom: activeSheet === sheetName ? "2px solid #1a73e8" : "1px solid #dadce0", // Blue underline for active
+                borderRadius: "4px 4px 0 0", // Rounded top corners
                 display: "inline-flex",
                 alignItems: "center",
-                whiteSpace: "nowrap"
+                whiteSpace: "nowrap",
+                color: activeSheet === sheetName ? "#1a73e8" : "#5f6368", // Text color
+                fontWeight: activeSheet === sheetName ? "bold" : "normal",
+                transition: 'background-color 0.2s, border-bottom 0.2s',
+                minWidth: '80px',
+                justifyContent: 'center',
               }}
               onClick={() => {
                 setActiveSheet(sheetName);
@@ -1813,7 +2315,7 @@ for (let r = 0; r < data.length; r++) {
                   onChange={(e) => setNewSheetName(e.target.value)}
                   onBlur={() => handleSaveSheetName(sheetName)}
                   onKeyDown={(e) => handleSheetNameInputKeyDown(e, sheetName)}
-                  style={{ border: "none", background: "transparent", outline: "none", width: "80px" }}
+                  style={{ border: "none", background: "transparent", outline: "none", width: "80px", textAlign: 'center' }}
                   autoFocus
                 />
               ) : (
@@ -1845,16 +2347,20 @@ for (let r = 0; r < data.length; r++) {
             onClick={handleAddSheet}
             style={{
               padding: "8px 12px",
-              background: "#4CAF50",
-              color: "white",
-              border: "none",
+              background: "#e8eaed", // Light grey for add button
+              color: "#5f6368",
+              border: "1px solid #dadce0",
               borderRadius: "4px",
               cursor: "pointer",
               flexShrink: 0,
-              marginLeft: "5px" 
+              marginLeft: "10px",
+              fontWeight: 500,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
           >
-            + Add Sheet
+            +
           </button>
         </div>
       </div>
