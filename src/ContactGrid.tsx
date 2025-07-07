@@ -12,8 +12,8 @@ import DataEditor, {
 } from "@glideapps/glide-data-grid";
 import "@glideapps/glide-data-grid/dist/index.css";
 import * as FormulaJS from "formulajs";
-import * as XLSX from "xlsx"; 
-import { saveAs } from "file-saver"; 
+import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import {io} from "socket.io-client"
@@ -58,22 +58,45 @@ type CellData = {
   alignment?: "left" | "center" | "right";
   bold?: boolean;
   italic?: boolean;
-  underline?: boolean; 
+  underline?: boolean;
   strikethrough?: boolean;
   textColor?: string;
   bgColor?: string;
   borderColor?: string;
   fontFamily?: string;
-  background?: string; 
-  displayData?: string | number; 
-  data?: string | number; 
+  background?: string;
+  displayData?: string | number;
+  data?: string | number;
   comment?: string;
-  link?: string;  
+  link?: string;
+  dataValidation?: {
+    type: 'number' | 'text' | 'date' | 'list';
+    operator?: 'greaterThan' | 'lessThan' | 'equalTo' | 'notEqualTo' | 'between' | 'textContains' | 'startsWith' | 'endsWith';
+    value1?: string | number;
+    value2?: string | number; // For 'between'
+    sourceRange?: Rectangle; // For 'list' from range
+  };
 };
 
 type SheetData = {
   [sheetName: string]: CellData[][];
 };
+
+type ConditionalFormattingRule = {
+  id: string;
+  range: Rectangle;
+  type: 'greaterThan' | 'lessThan' | 'equalTo' | 'textContains' | 'between';
+  value1: string | number;
+  value2?: string | number; // For 'between'
+  style: { bgColor?: string; textColor?: string };
+};
+
+type NamedRange = {
+  id: string;
+  name: string;
+  range: Rectangle;
+};
+
 const createInitialSheetData = (): CellData[][] =>
   Array.from({ length: NUM_ROWS }, () =>
     Array.from({ length: NUM_COLUMNS }, () => ({ value: "" }))
@@ -103,7 +126,14 @@ const getCellRangeValues = (
   }
   return values;
 };
-const parseArg = (arg: string, data: CellData[][]): number[] => {
+const parseArg = (arg: string, data: CellData[][], namedRanges: NamedRange[]): number[] => {
+  // Check for named ranges first
+  const namedRangeMatch = namedRanges.find(nr => nr.name.toUpperCase() === arg.toUpperCase());
+  if (namedRangeMatch) {
+    const { x, y, width, height } = namedRangeMatch.range;
+    return getCellRangeValues([x, y], [x + width - 1, y + height - 1], data);
+  }
+
   const rangeMatch = arg.match(/^([A-Z]+\d+):([A-Z]+\d+)$/i);
   if (rangeMatch) {
     const start = parseCellName(rangeMatch[1]);
@@ -111,7 +141,7 @@ const parseArg = (arg: string, data: CellData[][]): number[] => {
     if (!start || !end) return [];
     return getCellRangeValues(start, end, data);
   }
-  
+
   const cell = parseCellName(arg);
   if (cell) {
     const [col, row] = cell;
@@ -122,13 +152,14 @@ const parseArg = (arg: string, data: CellData[][]): number[] => {
   if (arg.trim() === '') return [];
   return [];
 };
-const evaluateFormula = (formula: string, data: CellData[][]): string => {
+const evaluateFormula = (formula: string, data: CellData[][], namedRanges: NamedRange[]): string => {
   const funcMatch = formula.match(/^=(\w+)\(([^)]*)\)$/i);
   if (!funcMatch) return formula;
 
   const [, func, args] = funcMatch;
   const funcUpper = func.toUpperCase();
-  const parsedArgs = args.split(',').map(s => s.trim()).flatMap(arg => parseArg(arg, data));
+  // Pass namedRanges to parseArg
+  const parsedArgs = args.split(',').map(s => s.trim()).flatMap(arg => parseArg(arg, data, namedRanges));
   const error = (msg: string) => `#ERROR: ${msg}`;
   const argCount = args.split(',').map(s => s.trim()).filter(s => s !== '').length;
   switch (funcUpper) {
@@ -173,24 +204,24 @@ const evaluateFormula = (formula: string, data: CellData[][]): string => {
         return parsedArgs.length > 0 ? FormulaJS.PRODUCT(...parsedArgs).toString() : "0";
       case "IF":
         const [cond, trueVal, falseVal] = args.split(',').map(s => s.trim());
-        const condVal = parseArg(cond, data)[0] || 0;
-        return condVal ? parseArg(trueVal, data)[0].toString() || trueVal : parseArg(falseVal, data)[0].toString() || falseVal;
+        const condVal = parseArg(cond, data, namedRanges)[0] || 0; // Pass namedRanges
+        return condVal ? parseArg(trueVal, data, namedRanges)[0].toString() || trueVal : parseArg(falseVal, data, namedRanges)[0].toString() || falseVal; // Pass namedRanges
       case "ROUND":
         // ROUND(number, digits)
         const [numArg, digitsArg] = args.split(',').map(s => s.trim());
-        const num = parseArg(numArg, data)[0] || 0;
+        const num = parseArg(numArg, data, namedRanges)[0] || 0; // Pass namedRanges
         const digits = parseInt(digitsArg) || 0;
         return FormulaJS.ROUND(num, digits).toString();
       case "ABS":
-        const absArg = parseArg(args, data)[0] || 0;
+        const absArg = parseArg(args, data, namedRanges)[0] || 0; // Pass namedRanges
         return FormulaJS.ABS(absArg).toString();
       case "SQRT":
-        const sqrtArg = parseArg(args, data)[0] || 0;
+        const sqrtArg = parseArg(args, data, namedRanges)[0] || 0; // Pass namedRanges
         return sqrtArg >= 0 ? FormulaJS.SQRT(sqrtArg).toString() : error("Negative number");
       case "POWER":
         const [baseArg, expArg] = args.split(',').map(s => s.trim());
-        const base = parseArg(baseArg, data)[0] || 0;
-        const exp = parseArg(expArg, data)[0] || 1;
+        const base = parseArg(baseArg, data, namedRanges)[0] || 0; // Pass namedRanges
+        const exp = parseArg(expArg, data, namedRanges)[0] || 1; // Pass namedRanges
         return FormulaJS.POWER(base, exp).toString();
       default:
         return formula;
@@ -199,10 +230,41 @@ const evaluateFormula = (formula: string, data: CellData[][]): string => {
     return error("Invalid formula");
   }
 };
+
+// Theme definitions
+const lightTheme = {
+  bg: '#ffffff',
+  bg2: '#f8f9fa',
+  text: '#202124',
+  textLight: '#5f6368',
+  border: '#dadce0',
+  menuBg: '#fff',
+  menuHoverBg: '#e6e6e6',
+  activeTabBg: '#e8eaed',
+  activeTabBorder: '#1a73e8',
+  shadow: '0 1px 2px 0 rgba(60,64,67,0.08)',
+  cellHighlightBg: '#E0F0FF',
+  cellHighlightBorder: '#1E90FF',
+};
+
+const darkTheme = {
+  bg: '#202124',
+  bg2: '#3c4043',
+  text: '#e8eaed',
+  textLight: '#bdc1c6',
+  border: '#5f6368',
+  menuBg: '#3c4043',
+  menuHoverBg: '#5f6368',
+  activeTabBg: '#5f6368',
+  activeTabBorder: '#8ab4f8',
+  shadow: '0 2px 6px rgba(0,0,0,0.5)',
+  cellHighlightBg: '#303030',
+  cellHighlightBorder: '#8ab4f8',
+};
+
 const menuItem: React.CSSProperties = {
   padding: "8px 16px", // Slightly less padding for a compact menu
   textAlign: "left",
-  background: "white",
   border: "none",
   cursor: "pointer",
   width: "100%",
@@ -215,10 +277,7 @@ const menuDropdownStyle: React.CSSProperties = {
   position: "absolute",
   top: "100%",
   left: 0,
-  backgroundColor: "#fff",
-  border: "1px solid #dadce0", // Google-like border
   borderRadius: "4px",
-  boxShadow: "0 2px 6px rgba(60,64,67,0.15)", // Subtle shadow
   zIndex: 1000,
   minWidth: "160px", // Adjusted min-width
   padding: "4px 0", // Reduced padding
@@ -230,10 +289,7 @@ const subMenuDropdownStyle: React.CSSProperties = {
   position: "absolute",
   top: "0",
   left: "100%", // Position to the right of the parent menu item
-  backgroundColor: "#fff",
-  border: "1px solid #dadce0",
   borderRadius: "4px",
-  boxShadow: "0 2px 6px rgba(60,64,67,0.15)",
   zIndex: 1001, // Higher z-index to appear above parent dropdown
   minWidth: "160px",
   padding: "4px 0",
@@ -244,7 +300,6 @@ const subMenuDropdownStyle: React.CSSProperties = {
 const topBarButtonStyle: React.CSSProperties = {
   padding: "6px 10px", // Smaller padding for top bar buttons
   background: "transparent", // Transparent background
-  color: "#202124", // Dark text color
   border: "none",
   borderRadius: "4px",
   cursor: "pointer",
@@ -307,10 +362,10 @@ const ContactGrid: React.FC = () => {
   const [selectedRanges, setSelectedRanges] = useState<Rectangle[]>([]);
 
   const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-const [clipboardData, setClipboardData] = useState<any[][] | null>(null);
+  const [clipboardData, setClipboardData] = useState<any[][] | null>(null);
 
   const [undoStack, setUndoStack] = useState<SheetData[]>([]);
-const [redoStack, setRedoStack] = useState<SheetData[]>([]);
+  const [redoStack, setRedoStack] = useState<SheetData[]>([]);
 
   const [sheets, setSheets] = useState<SheetData>(() => {
     const initialSheetName = "Sheet1";
@@ -329,12 +384,114 @@ const [redoStack, setRedoStack] = useState<SheetData[]>([]);
   const [editingSheetName, setEditingSheetName] = useState<string | null>(null);
   const [newSheetName, setNewSheetName] = useState<string>("");
   const [saveLoadSheetName, setSaveLoadSheetName] = useState<string>('');
-const gridRef = useRef<any>(null); 
+  const gridRef = useRef<any>(null);
+
+  // New states for sorting and filtering
+  const [sortColumnIndex, setSortColumnIndex] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+  const [showFilterRow, setShowFilterRow] = useState<boolean>(false);
+  const [columnFilters, setColumnFilters] = useState<{ [key: number]: string }>({});
+
+  // New states for Conditional Formatting and Freeze Panes
+  const [conditionalFormattingRules, setConditionalFormattingRules] = useState<ConditionalFormattingRule[]>([]);
+  const [showConditionalFormattingModal, setShowConditionalFormattingModal] = useState(false);
+  const [cfType, setCfType] = useState<ConditionalFormattingRule['type']>('greaterThan');
+  const [cfValue1, setCfValue1] = useState<string>('');
+  const [cfValue2, setCfValue2] = useState<string>('');
+  const [cfBgColor, setCfBgColor] = useState<string>('#FFFF00'); // Default to yellow
+  const [cfTextColor, setCfTextColor] = useState<string>('#000000'); // Default to black
+
+  const [frozenRows, setFrozenRows] = useState<number>(0);
+  const [frozenColumns, setFrozenColumns] = useState<number>(0);
+
+  // State to force DataEditor re-render on data/sort/filter changes
+  const [dataUpdateKey, setDataUpdateKey] = useState(0);
+
+  // States for Find feature
+  const [showFindModal, setShowFindModal] = useState(false);
+  const [findSearchTerm, setFindSearchTerm] = useState('');
+  const [findReplaceTerm, setFindReplaceTerm] = useState(''); // New state for replace
+  const [findCurrentMatch, setFindCurrentMatch] = useState<Item | null>(null);
+  const [findMatches, setFindMatches] = useState<Item[]>([]);
+  const [findMatchIndex, setFindMatchIndex] = useState(0);
+
+  // Data Validation states
+  const [showDataValidationModal, setShowDataValidationModal] = useState(false);
+  const [dvType, setDvType] = useState<'number' | 'text' | 'date' | 'list'>('number'); // Changed type here
+  const [dvOperator, setDvOperator] = useState<'greaterThan' | 'lessThan' | 'equalTo' | 'notEqualTo' | 'between' | 'textContains' | 'startsWith' | 'endsWith'>('greaterThan'); // Changed type here
+  const [dvValue1, setDvValue1] = useState<string>('');
+  const [dvValue2, setDvValue2] = useState<string>('');
+  const [dvSourceRange, setDvSourceRange] = useState<string>('');
+
+  // Named Ranges states
+  const [showNamedRangesModal, setShowNamedRangesModal] = useState(false);
+  const [namedRanges, setNamedRanges] = useState<NamedRange[]>([]);
+  const [newNamedRangeName, setNewNamedRangeName] = useState<string>('');
+  const [newNamedRangeRef, setNewNamedRangeRef] = useState<string>('');
+  const [editingNamedRangeId, setEditingNamedRangeId] = useState<string | null>(null);
+
+  // Dark Mode State
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const currentTheme = isDarkMode ? darkTheme : lightTheme;
 
 
   const activeCell = useRef<Item | null>(null);
   const selecting = useRef<Rectangle | null>(null);
   const currentSheetData = sheets[activeSheet];
+
+  // Memoized data that is filtered and then sorted
+  const getDisplayedData = useMemo(() => {
+    let dataWithOriginalIndex = currentSheetData.map((row, originalRowIndex) => ({
+      originalRowIndex,
+      data: row,
+    }));
+
+    // Apply filters
+    const activeFilters = Object.entries(columnFilters).filter(([, value]) => value.trim() !== '');
+    if (activeFilters.length > 0) {
+      dataWithOriginalIndex = dataWithOriginalIndex.filter(item => {
+        return activeFilters.every(([colIndexStr, filterValue]) => {
+          const colIndex = parseInt(colIndexStr);
+          const cellValue = item.data[colIndex]?.value?.toString().toLowerCase() || '';
+          return cellValue.includes(filterValue.toLowerCase());
+        });
+      });
+    }
+
+    // Apply sorting
+    if (sortColumnIndex !== null && sortDirection !== null) {
+      const sortedData = [...dataWithOriginalIndex]; // Create a shallow copy to avoid mutating original
+      sortedData.sort((itemA, itemB) => {
+        const valueA = itemA.data[sortColumnIndex]?.value || "";
+        const valueB = itemB.data[sortColumnIndex]?.value || "";
+
+        // Attempt to convert to number for numeric sorting
+        const numA = parseFloat(valueA);
+        const numB = parseFloat(valueB);
+
+        if (!isNaN(numA) && !isNaN(numB)) {
+          return sortDirection === 'asc' ? numA - numB : numB - numA;
+        } else {
+          // Fallback to string comparison
+          return sortDirection === 'asc'
+            ? valueA.localeCompare(valueB)
+            : valueB.localeCompare(valueA);
+        }
+      });
+      // Pad sorted data with empty rows if it became shorter than NUM_ROWS
+      while (sortedData.length < NUM_ROWS) {
+        sortedData.push({ originalRowIndex: -1, data: Array(NUM_COLUMNS).fill({ value: "" }) }); // Use -1 for padded rows
+      }
+      return sortedData;
+    }
+    // Pad original data if it's shorter than NUM_ROWS
+    while (dataWithOriginalIndex.length < NUM_ROWS) {
+      dataWithOriginalIndex.push({ originalRowIndex: -1, data: Array(NUM_COLUMNS).fill({ value: "" }) });
+    }
+    return dataWithOriginalIndex;
+  }, [currentSheetData, sortColumnIndex, sortDirection, columnFilters]);
+
+
   const updateSuggestions = (inputValue: string) => {
     const suggestionsList = [
       "=SUM(",
@@ -362,8 +519,20 @@ const gridRef = useRef<any>(null);
   };
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
-      const cell = currentSheetData[row]?.[col] ?? { value: "" };
-      let displayValue = cell.formula ? evaluateFormula(cell.formula, currentSheetData) : cell.value;
+      // Use getDisplayedData for cell content
+      const displayedRowData = getDisplayedData[row];
+      if (!displayedRowData) {
+        return {
+          kind: GridCellKind.Text,
+          allowOverlay: true,
+          readonly: false,
+          displayData: "",
+          data: "",
+        };
+      }
+      const cell = displayedRowData.data[col] ?? { value: "" };
+      // Pass namedRanges to evaluateFormula
+      let displayValue = cell.formula ? evaluateFormula(cell.formula, currentSheetData, namedRanges) : cell.value;
       // If displayValue is an object, convert it to a string for display
       if (typeof displayValue === 'object' && displayValue !== null) {
         displayValue = JSON.stringify(displayValue);
@@ -386,11 +555,11 @@ const gridRef = useRef<any>(null);
         displayData: displayValue,
         data: cell.formula ?? cell.value,
         themeOverride: inHighlight
-        ? { bgCell: "#E0F0FF", borderColor: "#1E90FF" }
-        : undefined, 
+        ? { bgCell: currentTheme.cellHighlightBg, borderColor: currentTheme.cellHighlightBorder }
+        : undefined,
       };
     },
-    [currentSheetData, highlightRange]
+    [getDisplayedData, highlightRange, currentTheme, currentSheetData, namedRanges] // Add namedRanges to dependencies
   );
  const onCellEdited = useCallback(
   ([col, row]: Item, newValue: EditableGridCell) => {
@@ -403,58 +572,112 @@ const gridRef = useRef<any>(null);
     if (newValue.kind !== GridCellKind.Text) return;
 
     const text = newValue.data;
+
+    // Get the original row index from the displayed data
+    const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+    if (originalRowIndex === undefined || originalRowIndex === -1) {
+      console.warn("Attempted to edit a non-existent or padded row.");
+      return;
+    }
+
+    // --- Data Validation Check ---
+    const cellToValidate = sheets[activeSheet][originalRowIndex]?.[col];
+    const validationRule = cellToValidate?.dataValidation;
+    if (validationRule) {
+      let isValid = true;
+      const numericValue = parseFloat(text);
+
+      switch (validationRule.type) {
+        case 'number':
+          if (isNaN(numericValue)) {
+            isValid = false;
+          } else if (validationRule.operator === 'greaterThan' && numericValue <= (validationRule.value1 as number)) {
+            isValid = false;
+          } else if (validationRule.operator === 'lessThan' && numericValue >= (validationRule.value1 as number)) {
+            isValid = false;
+          } else if (validationRule.operator === 'equalTo' && numericValue !== (validationRule.value1 as number)) {
+            isValid = false;
+          } else if (validationRule.operator === 'notEqualTo' && numericValue === (validationRule.value1 as number)) {
+            isValid = false;
+          } else if (validationRule.operator === 'between' && (numericValue < (validationRule.value1 as number) || numericValue > (validationRule.value2 as number))) {
+            isValid = false;
+          }
+          break;
+        case 'text':
+          const lowerCaseText = text.toLowerCase();
+          if (validationRule.operator === 'textContains' && !(lowerCaseText.includes(String(validationRule.value1).toLowerCase()))) {
+            isValid = false;
+          } else if (validationRule.operator === 'startsWith' && !(lowerCaseText.startsWith(String(validationRule.value1).toLowerCase()))) {
+            isValid = false;
+          } else if (validationRule.operator === 'endsWith' && !(lowerCaseText.endsWith(String(validationRule.value1).toLowerCase()))) {
+            isValid = false;
+          }
+          break;
+        case 'list':
+          if (validationRule.sourceRange) {
+            const { x, y, width, height } = validationRule.sourceRange;
+            const allowedValues: string[] = [];
+            for (let r = y; r < y + height; r++) {
+              for (let c = x; c < x + width; c++) {
+                const sourceCell = sheets[activeSheet]?.[r]?.[c];
+                if (sourceCell) {
+                  allowedValues.push(sourceCell.value);
+                }
+              }
+            }
+            if (!allowedValues.includes(text)) {
+              isValid = false;
+              alert(`Invalid input. Please choose from: ${allowedValues.join(', ')}`);
+            }
+          }
+          break;
+        // Add more validation types (date, etc.) here
+      }
+
+      if (!isValid) {
+        alert(`Invalid data for this cell based on validation rules: ${text}`);
+        console.warn(`Data validation failed for cell [${col}, ${row}] with value: ${text}`);
+        return; // Prevent update if validation fails
+      }
+    }
+    // --- End Data Validation Check ---
+
     socket.emit("cell-edit", {
-  sheet: activeSheet,
-  row,
-  col,
-  value: text,
-});
+      sheet: activeSheet,
+      row: originalRowIndex, // Use original row index for socket
+      col,
+      value: text,
+    });
 
     if (text.startsWith("=")) {
-      const checkArgCount = (func: string, args: string): boolean => {
+      const funcMatch = text.match(/^=(\w+)\(([^)]*)\)$/i);
+      if (funcMatch) {
+        const [, func, args] = funcMatch;
+        const funcUpper = func.toUpperCase();
         const argCount = args
           .split(",")
           .map((s) => s.trim())
           .filter((s) => s !== "").length;
 
-        if (func === "IF") {
-          setFormulaError(argCount !== 3 ? `${func} requires 3 arguments` : null);
-          return argCount === 3;
-        } else if (func === "ROUND" || func === "POWER") {
-          setFormulaError(argCount !== 2 ? `${func} requires 2 arguments` : null);
-          return argCount === 2;
-        } else if (func === "ABS" || func === "SQRT") {
-          if (argCount !== 1) {
-            setFormulaError(`${func} requires 1 argument`);
-            return false;
-          } else if (args.includes(":")) {
-            setFormulaError(`${func} requires a single cell, not a range`);
-            return false;
-          }
-          return true;
+        let formulaValid = true;
+        if (funcUpper === "IF") {
+          if (argCount !== 3) { setFormulaError(`${func} requires 3 arguments`); formulaValid = false; }
+        } else if (funcUpper === "ROUND" || funcUpper === "POWER") {
+          if (argCount !== 2) { setFormulaError(`${func} requires 2 arguments`); formulaValid = false; }
+        } else if (funcUpper === "ABS" || funcUpper === "SQRT") {
+          if (argCount !== 1) { setFormulaError(`${func} requires 1 argument`); formulaValid = false; }
+          else if (args.includes(":")) { setFormulaError(`${func} requires a single cell, not a range`); formulaValid = false; }
         } else if (
-          func === "SUM" ||
-          func === "AVERAGE" ||
-          func === "MIN" ||
-          func === "MAX" ||
-          func === "COUNT" ||
-          func === "PRODUCT"
+          ["SUM", "AVERAGE", "MIN", "MAX", "COUNT", "PRODUCT"].includes(funcUpper)
         ) {
-          setFormulaError(argCount < 1 ? `${func} requires at least 1 argument` : null);
-          return argCount >= 1;
+          if (argCount < 1) { setFormulaError(`${func} requires at least 1 argument`); formulaValid = false; }
+        } else {
+          setFormulaError(null); // Clear error if function is not recognized or has no specific arg count
         }
 
-        setFormulaError(null);
-        return true;
-      };
-
-      const funcMatch = text.match(/^=(\w+)\(([^)]*)\)$/i);
-      if (funcMatch) {
-        const [, func, args] = funcMatch;
-        const funcUpper = func.toUpperCase();
-        if (!checkArgCount(funcUpper, args)) {
+        if (!formulaValid) {
           console.warn(`Formula validation failed for: ${text}`);
-          return;
+          return; // Prevent update if formula validation fails
         }
       }
     }
@@ -462,12 +685,12 @@ const gridRef = useRef<any>(null);
     const currentSheetCopy = sheets[activeSheet].map((r) => [...r]);
 
     if (text.startsWith("=")) {
-      currentSheetCopy[row][col] = {
+      currentSheetCopy[originalRowIndex][col] = { // Use originalRowIndex here
         formula: text,
-        value: evaluateFormula(text, currentSheetCopy),
+        value: evaluateFormula(text, currentSheetCopy, namedRanges), // Pass namedRanges
       };
     } else {
-      currentSheetCopy[row][col] = { value: text };
+      currentSheetCopy[originalRowIndex][col] = { value: text }; // Use originalRowIndex here
     }
 
     updatedSheets[activeSheet] = currentSheetCopy;
@@ -477,13 +700,17 @@ const gridRef = useRef<any>(null);
       setShowSuggestions(false);
       setFormulaError(null);
     },
-    [activeSheet,sheets]
+    [activeSheet,sheets, getDisplayedData, namedRanges] // Add namedRanges to dependencies
   );
   const onFillPattern = useCallback(
   ({ patternSource, fillDestination }: FillPatternEventArgs) => {
     const sourceCol = patternSource.x;
     const sourceRow = patternSource.y;
-    const sourceCell = currentSheetData[sourceRow]?.[sourceCol];
+    // Need to get the original row index for the source cell
+    const originalSourceRowIndex = getDisplayedData[sourceRow]?.originalRowIndex;
+    if (originalSourceRowIndex === undefined || originalSourceRowIndex === -1) return;
+
+    const sourceCell = currentSheetData[originalSourceRowIndex]?.[sourceCol];
     if (!sourceCell) return;
 
     const fillValue = sourceCell.value;
@@ -493,12 +720,16 @@ const gridRef = useRef<any>(null);
     const currentSheetCopy = sheets[activeSheet].map((r) => [...r]);
 
     for (let r = fillDestination.y; r < fillDestination.y + fillDestination.height; r++) {
+      // Get original row index for the destination
+      const originalDestRowIndex = getDisplayedData[r]?.originalRowIndex;
+      if (originalDestRowIndex === undefined || originalDestRowIndex === -1) continue;
+
       for (let c = fillDestination.x; c < fillDestination.x + fillDestination.width; c++) {
         const isSourceCell = c >= patternSource.x && c < patternSource.x + patternSource.width &&
                              r >= patternSource.y && r < patternSource.y + patternSource.height;
         if (!isSourceCell) {
-          currentSheetCopy[r][c] = fillFormula
-            ? { formula: fillFormula, value: evaluateFormula(fillFormula, currentSheetCopy) }
+          currentSheetCopy[originalDestRowIndex][c] = fillFormula // Use originalDestRowIndex
+            ? { formula: fillFormula, value: evaluateFormula(fillFormula, currentSheetCopy, namedRanges) } // Pass namedRanges
             : { value: fillValue };
         }
       }
@@ -507,22 +738,28 @@ const gridRef = useRef<any>(null);
     updatedSheets[activeSheet] = currentSheetCopy;
     pushToUndoStack(updatedSheets);
   },
-  [activeSheet, currentSheetData]
+  [activeSheet, currentSheetData, getDisplayedData, namedRanges] // Add namedRanges to dependencies
 );
   const onFinishSelecting = useCallback(() => {
   if (!activeCell.current || !selecting.current) return;
   const [col, row] = activeCell.current;
+
+  // Get original row index for the active cell
+  const originalActiveRowIndex = getDisplayedData[row]?.originalRowIndex;
+  if (originalActiveRowIndex === undefined || originalActiveRowIndex === -1) return;
+
+
   const topLeft = getCellName(selecting.current.x, selecting.current.y);
   const bottomRight = getCellName(
     selecting.current.x + selecting.current.width - 1,
     selecting.current.y + selecting.current.height - 1
   );
   const formula = `=SUM(${topLeft}:${bottomRight})`;
-  const value = evaluateFormula(formula, currentSheetData);
+  const value = evaluateFormula(formula, currentSheetData, namedRanges); // Pass namedRanges
 
   const updatedSheets = { ...sheets };
   const currentSheetCopy = sheets[activeSheet].map((r) => [...r]);
-  currentSheetCopy[row][col] = { formula, value };
+  currentSheetCopy[originalActiveRowIndex][col] = { formula, value }; // Use originalActiveRowIndex
   updatedSheets[activeSheet] = currentSheetCopy;
   pushToUndoStack(updatedSheets);
 
@@ -530,7 +767,7 @@ const gridRef = useRef<any>(null);
   setHighlightRange(null);
   setShowSuggestions(false);
   setFormulaError(null);
-}, [activeSheet, currentSheetData]);
+}, [activeSheet, currentSheetData, getDisplayedData, namedRanges]); // Add namedRanges to dependencies
   const handleFormulaChange = (val: string) => {
     console.log("Formula input changed:", val);
     setFormulaInput(val);
@@ -600,6 +837,7 @@ const gridRef = useRef<any>(null);
     }));
     setActiveSheet(newSheetName);
     console.log(`Added new sheet: ${newSheetName}`);
+    setDataUpdateKey(prev => prev + 1); // Data structure changed
   };
 
   const handleDeleteSheet = (sheetToDelete: string) => {
@@ -617,6 +855,7 @@ const gridRef = useRef<any>(null);
       setActiveSheet(Object.keys(sheets)[0]);
       console.log(`Switched active sheet to: ${Object.keys(sheets)[0]}`);
     }
+    setDataUpdateKey(prev => prev + 1); // Data structure changed
   };
 
   const handleEditSheetName = (sheetName: string) => {
@@ -654,6 +893,7 @@ const gridRef = useRef<any>(null);
       console.log(`Active sheet renamed to: ${newSheetName}`);
     }
     setEditingSheetName(null);
+    setDataUpdateKey(prev => prev + 1); // Data structure changed
   };
 
   const handleSheetNameInputKeyDown = (e: React.KeyboardEvent, oldName: string) => {
@@ -662,7 +902,7 @@ const gridRef = useRef<any>(null);
       handleSaveSheetName(oldName);
     }
   };
-  
+
   const BASE_BACKEND_URL = 'http://localhost:5000/api/sheets';
 
   const saveSheetData = async () => {
@@ -687,6 +927,7 @@ const gridRef = useRef<any>(null);
         const result = await response.json();
         console.log('Save successful:', result);
         alert(`Spreadsheet "${result.sheet.name}" saved successfully!`);
+        setDataUpdateKey(prev => prev + 1); // Data might change on save (e.g. if backend modifies it)
       } else {
         const errorData = await response.json();
         console.error('Failed to save data:', errorData);
@@ -703,7 +944,7 @@ useEffect(() => {
   return () => window.removeEventListener("click", handleClick);
 }, []);
 
-  
+
 
   const handleExportToJSON = () => {
     const fileData = JSON.stringify(sheets, null, 2);
@@ -732,6 +973,7 @@ useEffect(() => {
         setSheets(parsedSheets);
         setActiveSheet(Object.keys(parsedSheets)[0] || "Sheet1");
         alert("Spreadsheet loaded from file successfully.");
+        setDataUpdateKey(prev => prev + 1); // Data changed
       } catch (err) {
         alert("Failed to import JSON file: Invalid format.");
       }
@@ -837,7 +1079,7 @@ const handleExportXLSX = () => {
 
         workbook.SheetNames.forEach((sheetName) => {
           const worksheet = workbook.Sheets[sheetName];
-          const jsonSheet: string[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false }); 
+          const jsonSheet: string[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
           const newSheetData: CellData[][] = Array.from({ length: NUM_ROWS }, () =>
             Array.from({ length: NUM_COLUMNS }, () => ({ value: "" }))
           );
@@ -846,7 +1088,7 @@ const handleExportXLSX = () => {
             row.forEach((cellValue, colIndex) => {
               if (newSheetData[rowIndex] && newSheetData[rowIndex][colIndex]) {
                 if (typeof cellValue === 'string' && cellValue.startsWith('=')) {
-                  newSheetData[rowIndex][colIndex] = { formula: cellValue, value: evaluateFormula(cellValue, newSheetData) };
+                  newSheetData[rowIndex][colIndex] = { formula: cellValue, value: evaluateFormula(cellValue, newSheetData, namedRanges) };
                 } else {
                   newSheetData[rowIndex][colIndex] = { value: String(cellValue) };
                 }
@@ -859,9 +1101,9 @@ const handleExportXLSX = () => {
         setSheets(importedSheets);
         setActiveSheet(Object.keys(importedSheets)[0] || "Sheet1");
         alert("Imported from Excel (.xlsx) successfully!");
+        setDataUpdateKey(prev => prev + 1); // Data changed
       } catch (err) {
-        console.error("Error importing Excel file:", err);
-        alert("Failed to import Excel file: Invalid format or content.");
+        alert("Failed to import Excel file: Invalid format.");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -876,7 +1118,7 @@ const handleExportXLSX = () => {
     }
     const csvContent = activeSheetData.map(row =>
       row.map(cell => {
-        const displayValue = cell.formula ? evaluateFormula(cell.formula, activeSheetData) : cell.value;
+        const displayValue = cell.formula ? evaluateFormula(cell.formula, activeSheetData, namedRanges) : cell.value;
         return `"${String(displayValue).replace(/"/g, '""')}"`;
       }).join(',')
     ).join('\n');
@@ -893,19 +1135,19 @@ const handleExportXLSX = () => {
     reader.onload = (e) => {
       try {
         const text = e.target?.result as string;
-        const rows = text.split('\n').filter(row => row.trim() !== ''); 
+        const rows = text.split('\n').filter(row => row.trim() !== '');
         const newSheetData: CellData[][] = Array.from({ length: NUM_ROWS }, () =>
           Array.from({ length: NUM_COLUMNS }, () => ({ value: "" }))
         );
 
         rows.forEach((rowStr, rowIndex) => {
-          const cells = rowStr.split(',').map(cell => cell.trim().replace(/^"|"$/g, '')); 
+          const cells = rowStr.split(',').map(cell => cell.trim().replace(/^"|"$/g, ''));
 
           cells.forEach((cellValue, colIndex) => {
             if (newSheetData[rowIndex] && newSheetData[rowIndex][colIndex]) {
-              
+
               if (cellValue.startsWith('=')) {
-                newSheetData[rowIndex][colIndex] = { formula: cellValue, value: evaluateFormula(cellValue, newSheetData) };
+                newSheetData[rowIndex][colIndex] = { formula: cellValue, value: evaluateFormula(cellValue, newSheetData, namedRanges) };
               } else {
                 newSheetData[rowIndex][colIndex] = { value: cellValue };
               }
@@ -919,6 +1161,7 @@ const handleExportXLSX = () => {
         }));
         setActiveSheet(importedSheetName);
         alert("Imported from CSV successfully!");
+        setDataUpdateKey(prev => prev + 1); // Data changed
 
       } catch (err) {
         console.error("Error importing CSV file:", err);
@@ -932,9 +1175,12 @@ const handleFontSizeChange = (size: number) => {
   const [col, row] = activeCell.current;
 
   const updated = { ...sheets };
+  const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+  if (originalRowIndex === undefined || originalRowIndex === -1) return;
+
   const copy = updated[activeSheet].map((r) => [...r]);
-  const cell = copy[row][col];
-  copy[row][col] = {
+  const cell = copy[originalRowIndex][col];
+  copy[originalRowIndex][col] = {
     ...cell,
     fontSize: size,
   };
@@ -946,9 +1192,12 @@ const handleAlignmentChange = (align: "left" | "center" | "right") => {
   const [col, row] = activeCell.current;
 
   const updated = { ...sheets };
+  const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+  if (originalRowIndex === undefined || originalRowIndex === -1) return;
+
   const copy = updated[activeSheet].map((r) => [...r]);
-  const cell = copy[row][col];
-  copy[row][col] = {
+  const cell = copy[originalRowIndex][col];
+  copy[originalRowIndex][col] = {
     ...cell,
     alignment: align,
   };
@@ -956,23 +1205,66 @@ const handleAlignmentChange = (align: "left" | "center" | "right") => {
   pushToUndoStack(updated);
 };
 
-const customDrawCell = (args: any) => {
+const customDrawCell = useCallback((args: any) => {
   const { ctx, theme, rect, col, row, cell } = args;
   if (cell.kind !== GridCellKind.Text) return false;
 
-  const cellData = sheets[activeSheet]?.[row]?.[col];
+  // Use getDisplayedData for cell data
+  const displayedRowData = getDisplayedData[row];
+  if (!displayedRowData) return false; // Should not happen if rows prop is correct
+  const cellData = displayedRowData.data[col];
 
-  const alignment: "left" | "center" | "right" = cellData?.alignment || "left";
-  const fontSize = cellData?.fontSize || 12;
-  const isBold = cellData?.bold ? "bold" : "normal";
-  const isItalic = cellData?.italic ? "italic" : "normal";
-  const isUnderline = cellData?.underline; 
-  const isStrikethrough = cellData?.strikethrough;
-  const textColor = cellData?.textColor || theme.textDark;
-  const bgColor = cellData?.bgColor || theme.bgCell;
-  const borderColor = cellData?.borderColor || theme.borderColor;
-  const fontFamily = cellData?.fontFamily || 'sans-serif'; // Get font family, default to sans-serif
+  let alignment: "left" | "center" | "right" = cellData?.alignment || "left";
+  let fontSize = cellData?.fontSize || 12;
+  let isBold = cellData?.bold ? "bold" : "normal";
+  let isItalic = cellData?.italic ? "italic" : "normal";
+  let isUnderline = cellData?.underline;
+  let isStrikethrough = cellData?.strikethrough;
+  let textColor = cellData?.textColor || currentTheme.text;
+  let bgColor = cellData?.bgColor || currentTheme.bg; // Use theme background color
+  let borderColor = cellData?.borderColor || currentTheme.border; // Use theme border color
+  let fontFamily = cellData?.fontFamily || 'sans-serif'; // Get font family, default to sans-serif
   let text = String(cell.displayData ?? "");
+
+  // Apply conditional formatting rules
+  for (const rule of conditionalFormattingRules) {
+    const { range, type, value1, value2, style } = rule;
+    // Check against the original row index for conditional formatting
+    const originalRowIndex = displayedRowData.originalRowIndex;
+    if (originalRowIndex !== -1 &&
+      col >= range.x && col < range.x + range.width &&
+      originalRowIndex >= range.y && originalRowIndex < range.y + range.height
+    ) {
+      const cellNumericValue = parseFloat(text);
+      const ruleNumericValue1 = parseFloat(value1 as string);
+      const ruleNumericValue2 = parseFloat(value2 as string);
+
+      let applyRule = false;
+      switch (type) {
+        case 'greaterThan':
+          applyRule = !isNaN(cellNumericValue) && !isNaN(ruleNumericValue1) && cellNumericValue > ruleNumericValue1;
+          break;
+        case 'lessThan':
+          applyRule = !isNaN(cellNumericValue) && !isNaN(ruleNumericValue1) && cellNumericValue < ruleNumericValue1;
+          break;
+        case 'equalTo':
+          applyRule = !isNaN(cellNumericValue) && !isNaN(ruleNumericValue1) && cellNumericValue === ruleNumericValue1;
+          break;
+        case 'between':
+          applyRule = !isNaN(cellNumericValue) && !isNaN(ruleNumericValue1) && !isNaN(ruleNumericValue2) &&
+                      cellNumericValue >= ruleNumericValue1 && cellNumericValue <= ruleNumericValue2;
+          break;
+        case 'textContains':
+          applyRule = typeof value1 === 'string' && text.toLowerCase().includes(value1.toLowerCase());
+          break;
+      }
+
+      if (applyRule) {
+        if (style.bgColor) bgColor = style.bgColor;
+        if (style.textColor) textColor = style.textColor;
+      }
+    }
+  }
 
 if (cell.link) {
   text = `${text}🔗`;
@@ -995,10 +1287,10 @@ if (cell.comment) {
   ctx.lineTo(rect.x + rect.width, rect.y + rect.height);
   ctx.stroke();
 
-  ctx.font = `${isItalic} ${isBold} ${fontSize}px ${fontFamily}`; 
+  ctx.font = `${isItalic} ${isBold} ${fontSize}px ${fontFamily}`;
   ctx.fillStyle = textColor;
   ctx.textBaseline = "middle";
-  const padding = 8; 
+  const padding = 8;
   const textMetrics = ctx.measureText(text);
   let x = rect.x + padding;
   if (alignment === "center") {
@@ -1020,7 +1312,7 @@ if (isUnderline) {
   }
   if (isStrikethrough) {
     const textWidth = textMetrics.width;
-    const textHeight = fontSize; 
+    const textHeight = fontSize;
     const strikethroughY = rect.y + rect.height / 2;
     ctx.beginPath();
     ctx.strokeStyle = textColor;
@@ -1031,40 +1323,22 @@ if (isUnderline) {
   }
 
   return true;
-};
-const toggleStyle = (type: "bold" | "italic") => {
-  if (!activeCell.current) return;
-  const [col, row] = activeCell.current;
+}, [getDisplayedData, conditionalFormattingRules, currentTheme]); // Add conditionalFormattingRules and currentTheme to dependencies
 
-  const updated = { ...sheets };
-  const copy = updated[activeSheet].map((r) => [...r]);
-  const cell = copy[row][col];
-  copy[row][col] = {
-    ...cell,
-    [type]: !cell?.[type],
-  };
-  updated[activeSheet] = copy;
-  pushToUndoStack(updated);
+const toggleStyle = (type: "bold" | "italic") => {
+  if (!selection.current) return;
+  applyStyleToRange(type, undefined); // This will toggle the style
 };
 
 const applyCellColor = (type: "textColor" | "bgColor" | "borderColor", color: string) => {
-  if (!activeCell.current) return;
-  const [col, row] = activeCell.current;
-
-  const updated = { ...sheets };
-  const copy = updated[activeSheet].map((r) => [...r]);
-  const cell = copy[row][col];
-  copy[row][col] = {
-    ...cell,
-    [type]: color,
-  };
-  updated[activeSheet] = copy;
-  pushToUndoStack(updated);
-};  
+  if (!selection.current) return;
+  applyStyleToRange(type, color);
+};
 const pushToUndoStack = (newSheets: SheetData) => {
   setUndoStack(prev => [...prev, sheets]);
-  setRedoStack([]); 
+  setRedoStack([]);
   setSheets(newSheets);
+  setDataUpdateKey(prev => prev + 1); // Increment key on data change
 };
 const insertRowAt = (index: number) => {
   const updated = { ...sheets };
@@ -1086,6 +1360,31 @@ const deleteRows = (rowIndex: number, count: number = 1) => {
   pushToUndoStack(updated);
 };
 
+const insertColumnAt = (index: number) => {
+  const updated = { ...sheets };
+  const copy = sheets[activeSheet].map((row) => {
+    const newRow = [...row];
+    newRow.splice(index, 0, { value: "" });
+    return newRow.slice(0, NUM_COLUMNS);
+  });
+  updated[activeSheet] = copy;
+  pushToUndoStack(updated);
+};
+
+const deleteColumns = (colIndex: number, count: number = 1) => {
+  const updated = { ...sheets };
+  const copy = sheets[activeSheet].map((row) => {
+    const newRow = [...row];
+    newRow.splice(colIndex, count);
+    while (newRow.length < NUM_COLUMNS) {
+      newRow.push({ value: "" });
+    }
+    return newRow;
+  });
+  updated[activeSheet] = copy;
+  pushToUndoStack(updated);
+};
+
 const [contextMenu, setContextMenu] = useState<{
   visible: boolean;
   x: number;
@@ -1099,6 +1398,7 @@ const handleUndo = () => {
   setRedoStack(prev => [...prev, sheets]);
   setUndoStack(prev => prev.slice(0, -1));
   setSheets(previous);
+  setDataUpdateKey(prev => prev + 1); // Data changed
 };
 
 const handleRedo = () => {
@@ -1107,6 +1407,7 @@ const handleRedo = () => {
   setUndoStack(prev => [...prev, sheets]);
   setRedoStack(prev => prev.slice(0, -1));
   setSheets(next);
+  setDataUpdateKey(prev => prev + 1); // Data changed
 };
 const handleODSImport = (e: React.ChangeEvent<HTMLInputElement>) => {
   const file = e.target.files?.[0];
@@ -1126,6 +1427,7 @@ const handleODSImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const updatedSheets = { ...sheets, Sheet1: importedSheet };
     pushToUndoStack(updatedSheets);
     setActiveSheet("Sheet1");
+    setDataUpdateKey(prev => prev + 1); // Data changed
   };
   reader.readAsBinaryString(file);
 };
@@ -1152,6 +1454,7 @@ const columns: GridColumn[] = useMemo(() =>
 
 const onColumnResize = useCallback((column: GridColumn, newSize: number, colIndex: number) => {
   setColumnWidths(prev => ({ ...prev, [colIndex]: newSize }));
+  setDataUpdateKey(prev => prev + 1); // Column width change might affect layout
 }, []);
  const applyStyleToRange = (key: string, value: any) => {
   if (!selection?.current) return;
@@ -1160,8 +1463,12 @@ const onColumnResize = useCallback((column: GridColumn, newSize: number, colInde
 
   let allHaveSame = true;
   for (let row = y; row < y + height; row++) {
+    // Get original row index for the selected range
+    const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+    if (originalRowIndex === undefined || originalRowIndex === -1) continue;
+
     for (let col = x; col < x + width; col++) {
-      const cell = currentSheet?.[row]?.[col];
+      const cell = currentSheet?.[originalRowIndex]?.[col]; // Use originalRowIndex
       if (!cell || cell[key as keyof typeof cell] !== value) {
         allHaveSame = false;
         break;
@@ -1174,21 +1481,23 @@ const onColumnResize = useCallback((column: GridColumn, newSize: number, colInde
   const copy = currentSheet.map(r => [...r]);
 
   for (let row = y; row < y + height; row++) {
+    const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+    if (originalRowIndex === undefined || originalRowIndex === -1) continue;
+
     for (let col = x; col < x + width; col++) {
-      const cell = copy[row]?.[col] ?? { value: "" };
+      const cell = copy[originalRowIndex]?.[col] ?? { value: "" }; // Use originalRowIndex
       // Toggle the style: if all selected cells have the style, remove it; otherwise, apply it.
-      copy[row][col] = { ...cell, [key]: allHaveSame ? undefined : value };
+      copy[originalRowIndex][col] = { ...cell, [key]: allHaveSame ? undefined : value }; // Use originalRowIndex
     }
   }
 
   updated[activeSheet] = copy;
   pushToUndoStack(updated);
-  
 };
 useEffect(() => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (!selection?.current) return;
-   
+
     const { range } = selection.current;
     const startX = Math.min(range.x, range.x + range.width - 1);
     const endX = Math.max(range.x, range.x + range.width - 1);
@@ -1200,9 +1509,12 @@ useEffect(() => {
       e.preventDefault();
       const copiedData: any[][] = [];
       for (let row = startY; row <= endY; row++) {
+        const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+        if (originalRowIndex === undefined || originalRowIndex === -1) continue;
+
         const rowData: any[] = [];
         for (let col = startX; col <= endX; col++) {
-          rowData.push(sheets[activeSheet][row]?.[col] ?? {
+          rowData.push(sheets[activeSheet][originalRowIndex]?.[col] ?? {
             value: "",
             background: "",
           });
@@ -1228,17 +1540,20 @@ useEffect(() => {
           const pasteStartY = Math.min(currentRange.y, currentRange.y + currentRange.height - 1);
 
           for (let rowOffset = 0; rowOffset < copiedData.length; rowOffset++) {
+            const targetRowDisplayIndex = pasteStartY + rowOffset;
+            const originalTargetRowIndex = getDisplayedData[targetRowDisplayIndex]?.originalRowIndex;
+            if (originalTargetRowIndex === undefined || originalTargetRowIndex === -1) continue;
+
             for (let colOffset = 0; colOffset < copiedData[rowOffset].length; colOffset++) {
-              const targetRow = pasteStartY + rowOffset;
               const targetCol = pasteStartX + colOffset;
-              if (newSheets[activeSheet][targetRow] && newSheets[activeSheet][targetRow][targetCol]) {
-                newSheets[activeSheet][targetRow][targetCol] = {
+              if (newSheets[activeSheet][originalTargetRowIndex] && newSheets[activeSheet][originalTargetRowIndex][targetCol]) {
+                newSheets[activeSheet][originalTargetRowIndex][targetCol] = {
                   fontSize: 14,
                   bold: false,
                   italic: false,
                   underline: false,
                   strikethrough: false, // Ensure default for strikethrough
-                  alignment: "left", 
+                  alignment: "left",
                   ...copiedData[rowOffset][colOffset], // paste value + background
                 };
               }
@@ -1246,6 +1561,7 @@ useEffect(() => {
           }
           pushToUndoStack(sheets);
           setSheets(newSheets);
+          setDataUpdateKey(prev => prev + 1); // Data changed
         } catch (err) {
           console.warn("Invalid clipboard format");
         }
@@ -1259,16 +1575,19 @@ useEffect(() => {
       const newSheets = JSON.parse(JSON.stringify(sheets));
 
       for (let row = startY; row <= endY; row++) {
+        const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+        if (originalRowIndex === undefined || originalRowIndex === -1) continue;
+
         const rowData: any[] = [];
         for (let col = startX; col <= endX; col++) {
-          const cell = newSheets[activeSheet][row]?.[col] ?? {
+          const cell = newSheets[activeSheet][originalRowIndex]?.[col] ?? {
             value: "",
             background: "",
           };
           rowData.push(cell);
 
           // Clear the cell
-          newSheets[activeSheet][row][col] = {
+          newSheets[activeSheet][originalRowIndex][col] = {
             value: "",
             background: "",
             fontSize: 14,
@@ -1276,7 +1595,7 @@ useEffect(() => {
             italic: false,
             underline: false,
             strikethrough: false, // Ensure default for strikethrough
-            alignment: "left", 
+            alignment: "left",
           };
         }
         copiedData.push(rowData);
@@ -1285,9 +1604,10 @@ useEffect(() => {
       navigator.clipboard.writeText(JSON.stringify(copiedData));
       pushToUndoStack(sheets);
       setSheets(newSheets);
+      setDataUpdateKey(prev => prev + 1); // Data changed
     }
   };
-}, [selection, sheets, activeSheet, clipboardData]);
+}, [selection, sheets, activeSheet, clipboardData, getDisplayedData]);
 
 useEffect(() => {
   const handleCellEdit = ({ sheet, row, col, value }: any) => {
@@ -1299,6 +1619,7 @@ useEffect(() => {
       updated[sheet] = copy;
       return updated;
     });
+    setDataUpdateKey(prev => prev + 1); // Data changed
   };
   socket.on("cell-edit", handleCellEdit);
   return () => {
@@ -1416,7 +1737,8 @@ const [showFileDropdown, setShowFileDropdown] = useState(false);
 const [showEditDropdown, setShowEditDropdown] = useState(false);
 const [showInsertDropdown, setShowInsertDropdown] = useState(false);
 const [showFormatDropdown, setShowFormatDropdown] = useState(false);
-// Removed showDataDropdown and showHelpDropdown states
+const [showDataDropdown, setShowDataDropdown] = useState(false); // New state for Data dropdown
+const [showViewDropdown, setShowViewDropdown] = useState(false); // New state for View dropdown
 
 const [showImportDropdown, setShowImportDropdown] = useState(false);
 const [showExportDropdown, setShowExportDropdown] = useState(false);
@@ -1432,7 +1754,13 @@ const handleInsertRowAbove = () => {
     alert("Please select a cell to insert a row.");
     return;
   }
-  insertRowAt(selection.current.range.y);
+  // Get original row index for the selected row
+  const originalRowIndex = getDisplayedData[selection.current.range.y]?.originalRowIndex;
+  if (originalRowIndex === undefined || originalRowIndex === -1) {
+    alert("Cannot insert row at this position.");
+    return;
+  }
+  insertRowAt(originalRowIndex); // Use original row index for insertion
   setShowEditDropdown(false);
 };
 
@@ -1441,7 +1769,13 @@ const handleInsertRowBelow = () => {
     alert("Please select a cell to insert a row.");
     return;
   }
-  insertRowAt(selection.current.range.y + selection.current.range.height);
+  // Get original row index for the selected row
+  const originalRowIndex = getDisplayedData[selection.current.range.y]?.originalRowIndex;
+  if (originalRowIndex === undefined || originalRowIndex === -1) {
+    alert("Cannot insert row at this position.");
+    return;
+  }
+  insertRowAt(originalRowIndex + selection.current.range.height); // Use original row index for insertion
   setShowEditDropdown(false);
 };
 
@@ -1451,16 +1785,21 @@ const handleDeleteSelectedRows = () => {
     return;
   }
   // Get all selected row indices
-  const selectedRowIndices: number[] = Array.from(selection.rows); // Use Array.from to iterate
+  const selectedRowDisplayIndices: number[] = Array.from(selection.rows); // Use Array.from to iterate
+
+  // Map display indices to original indices
+  const selectedOriginalRowIndices = selectedRowDisplayIndices
+    .map(displayIndex => getDisplayedData[displayIndex]?.originalRowIndex)
+    .filter(index => index !== undefined && index !== -1) as number[];
 
   // Sort in descending order to avoid index issues during deletion
-  selectedRowIndices.sort((a, b) => b - a);
+  selectedOriginalRowIndices.sort((a, b) => b - a);
 
   const updatedSheets = { ...sheets };
   let currentSheetCopy = sheets[activeSheet].map((r) => [...r]);
 
-  selectedRowIndices.forEach(rowIndex => {
-    currentSheetCopy.splice(rowIndex, 1);
+  selectedOriginalRowIndices.forEach(originalRowIndex => {
+    currentSheetCopy.splice(originalRowIndex, 1);
   });
 
   // Add empty rows at the bottom to maintain NUM_ROWS
@@ -1470,6 +1809,42 @@ const handleDeleteSelectedRows = () => {
 
   updatedSheets[activeSheet] = currentSheetCopy;
   pushToUndoStack(updatedSheets);
+  setShowEditDropdown(false);
+  setSelection({ // Clear selection after deletion
+    columns: CompactSelection.empty(),
+    rows: CompactSelection.empty(),
+  });
+};
+
+const handleInsertColumnLeft = () => {
+  if (!selection.current) {
+    alert("Please select a cell to insert a column.");
+    return;
+  }
+  insertColumnAt(selection.current.range.x);
+  setShowEditDropdown(false);
+};
+
+const handleInsertColumnRight = () => {
+  if (!selection.current) {
+    alert("Please select a cell to insert a column.");
+    return;
+  }
+  insertColumnAt(selection.current.range.x + selection.current.range.width);
+  setShowEditDropdown(false);
+};
+
+const handleDeleteSelectedColumns = () => {
+  if (selection.columns.length === 0) {
+    alert("Please select columns to delete.");
+    return;
+  }
+  const selectedColIndices: number[] = Array.from(selection.columns);
+  selectedColIndices.sort((a, b) => b - a); // Sort descending to avoid index issues
+
+  selectedColIndices.forEach(colIndex => {
+    deleteColumns(colIndex);
+  });
   setShowEditDropdown(false);
   setSelection({ // Clear selection after deletion
     columns: CompactSelection.empty(),
@@ -1503,10 +1878,13 @@ const applyLinkToCell = () => {
     return;
   }
   const [col, row] = activeCell.current;
+  const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+  if (originalRowIndex === undefined || originalRowIndex === -1) return;
+
   const updated = { ...sheets };
   const copy = updated[activeSheet].map((r) => [...r]);
-  const cell = copy[row][col];
-  copy[row][col] = {
+  const cell = copy[originalRowIndex][col];
+  copy[originalRowIndex][col] = {
     ...cell,
     link: linkValue.trim(),
   };
@@ -1522,10 +1900,13 @@ const applyCommentToCell = () => {
     return;
   }
   const [col, row] = activeCell.current;
+  const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+  if (originalRowIndex === undefined || originalRowIndex === -1) return;
+
   const updated = { ...sheets };
   const copy = updated[activeSheet].map((r) => [...r]);
-  const cell = copy[row][col];
-  copy[row][col] = {
+  const cell = copy[originalRowIndex][col];
+  copy[originalRowIndex][col] = {
     ...cell,
     comment: commentValue.trim(),
   };
@@ -1535,24 +1916,427 @@ const applyCommentToCell = () => {
   setShowCommentInput(false);
 };
 
+// New functions for Sorting
+const handleSort = (direction: 'asc' | 'desc') => {
+  if (activeCell.current === null) {
+    alert("Please select a cell in the column you want to sort.");
+    return;
+  }
+  const colIndex = activeCell.current[0];
+  setSortColumnIndex(colIndex);
+  setSortDirection(direction);
+  setShowDataDropdown(false); // Close dropdown
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for sort
+};
+
+// New functions for Filtering
+const toggleFilterRow = () => {
+  setShowFilterRow(prev => !prev);
+  // Clear filters when toggling off
+  if (showFilterRow) {
+    setColumnFilters({});
+  }
+  setShowDataDropdown(false); // Close dropdown
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for filter
+};
+
+const handleColumnFilterChange = (colIndex: number, value: string) => {
+  setColumnFilters(prev => ({
+    ...prev,
+    [colIndex]: value,
+  }));
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for filter
+};
+
+const clearAllFilters = () => {
+  setColumnFilters({});
+  setSortColumnIndex(null); // Also clear sort when clearing filters
+  setSortDirection(null);
+  setShowFilterRow(false);
+  setShowDataDropdown(false); // Close dropdown
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for filter
+};
+
+// Conditional Formatting Functions
+const handleApplyConditionalFormatting = () => {
+  if (!selection.current) {
+    alert("Please select a range to apply conditional formatting.");
+    return;
+  }
+  setShowConditionalFormattingModal(true);
+  setShowFormatDropdown(false);
+};
+
+const addConditionalFormattingRule = () => {
+  if (!selection.current || (!cfValue1.trim() && cfType !== 'between')) {
+    alert("Please select a range and enter a value for conditional formatting.");
+    return;
+  }
+  if (cfType === 'between' && (!cfValue1.trim() || !cfValue2.trim())) {
+    alert("Please enter both values for 'between' rule.");
+    return;
+  }
+
+  const newRule: ConditionalFormattingRule = {
+    id: Date.now().toString(), // Simple unique ID
+    range: selection.current.range,
+    type: cfType,
+    value1: cfValue1,
+    value2: cfType === 'between' ? cfValue2 : undefined,
+    style: { bgColor: cfBgColor, textColor: cfTextColor },
+  };
+  setConditionalFormattingRules(prev => [...prev, newRule]);
+  setShowConditionalFormattingModal(false);
+  setCfValue1('');
+  setCfValue2('');
+  setCfType('greaterThan'); // Reset to default
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for CF
+};
+
+const clearConditionalFormatting = () => {
+  setConditionalFormattingRules([]);
+  setShowFormatDropdown(false);
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for CF
+};
+
+// Freeze Panes Functions
+const handleFreezeRows = (count: number) => {
+  if (activeCell.current === null && count > 0) {
+    alert("Please select a cell to freeze rows up to.");
+    return;
+  }
+  setFrozenRows(count === -1 ? activeCell.current![1] + 1 : count);
+  setFrozenColumns(0); // Unfreeze columns when freezing rows
+  setShowViewDropdown(false);
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for freeze
+};
+
+const handleFreezeColumns = (count: number) => {
+  if (activeCell.current === null && count > 0) {
+    alert("Please select a cell to freeze columns up to.");
+    return;
+  }
+  setFrozenColumns(count === -1 ? activeCell.current![0] + 1 : count);
+  setFrozenRows(0); // Unfreeze rows when freezing columns
+  setShowViewDropdown(false);
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for freeze
+};
+
+const handleUnfreezePanes = () => {
+  setFrozenRows(0);
+  setFrozenColumns(0);
+  setShowViewDropdown(false);
+  setDataUpdateKey(prev => prev + 1); // Force re-render of DataEditor for unfreeze
+};
+
+// Find feature functions
+const handleFind = () => {
+  if (!findSearchTerm.trim()) {
+    setFindMatches([]);
+    setFindCurrentMatch(null);
+    setFindMatchIndex(0);
+    return;
+  }
+
+  const matches: Item[] = [];
+  const lowerCaseSearchTerm = findSearchTerm.toLowerCase();
+
+  for (let r = 0; r < getDisplayedData.length; r++) {
+    const rowData = getDisplayedData[r].data; // Access the actual row data
+    for (let c = 0; c < rowData.length; c++) {
+      const cell = rowData[c];
+      const cellValue = cell?.value?.toString().toLowerCase() || '';
+      if (cellValue.includes(lowerCaseSearchTerm)) {
+        matches.push([c, r]); // Store display coordinates
+      }
+    }
+  }
+  setFindMatches(matches);
+  if (matches.length > 0) {
+    setFindMatchIndex(0);
+    setFindCurrentMatch(matches[0]);
+    // Set selection to the first match
+    setSelection({
+      columns: CompactSelection.empty(),
+      rows: CompactSelection.empty(),
+      current: {
+        cell: matches[0],
+        range: { x: matches[0][0], y: matches[0][1], width: 1, height: 1 },
+        rangeStack: [],
+      },
+    });
+    gridRef.current?.scrollTo(matches[0][0], matches[0][1], "center", "center");
+  } else {
+    setFindCurrentMatch(null);
+    // alert("No matches found."); // Removed alert to avoid blocking UI
+  }
+};
+
+const handleFindNext = () => {
+  if (findMatches.length === 0) return;
+  const nextIndex = (findMatchIndex + 1) % findMatches.length;
+  setFindMatchIndex(nextIndex);
+  const nextMatch = findMatches[nextIndex];
+  setFindCurrentMatch(nextMatch);
+  setSelection({
+    columns: CompactSelection.empty(),
+    rows: CompactSelection.empty(),
+    current: {
+      cell: nextMatch,
+      range: { x: nextMatch[0], y: nextMatch[1], width: 1, height: 1 },
+      rangeStack: [],
+    },
+  });
+  gridRef.current?.scrollTo(nextMatch[0], nextMatch[0], "center", "center");
+};
+
+const handleFindPrevious = () => {
+  if (findMatches.length === 0) return;
+  const prevIndex = (findMatchIndex - 1 + findMatches.length) % findMatches.length;
+  setFindMatchIndex(prevIndex);
+  const prevMatch = findMatches[prevIndex];
+  setFindCurrentMatch(prevMatch);
+  setSelection({
+    columns: CompactSelection.empty(),
+    rows: CompactSelection.empty(),
+    current: {
+      cell: prevMatch,
+      range: { x: prevMatch[0], y: prevMatch[1], width: 1, height: 1 },
+      rangeStack: [],
+    },
+  });
+  gridRef.current?.scrollTo(prevMatch[0], prevMatch[1], "center", "center");
+};
+
+const handleReplace = () => {
+  if (!findCurrentMatch) {
+    alert("No current match to replace.");
+    return;
+  }
+
+  const [col, row] = findCurrentMatch;
+  const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+  if (originalRowIndex === undefined || originalRowIndex === -1) return;
+
+  const cell = currentSheetData[originalRowIndex]?.[col];
+  if (cell && cell.value.toLowerCase().includes(findSearchTerm.toLowerCase())) {
+    const newValue = cell.value.replace(new RegExp(findSearchTerm, 'gi'), findReplaceTerm);
+    onCellEdited([col, row], { kind: GridCellKind.Text, data: newValue, displayData: newValue, allowOverlay: true });
+    // Re-run find to update matches and selection
+    handleFind();
+  } else {
+    alert("Current match does not contain the search term or cell is empty.");
+  }
+};
+
+const handleReplaceAll = () => {
+  if (!findSearchTerm.trim()) {
+    alert("Please enter a search term to replace all.");
+    return;
+  }
+
+  const updatedSheets = { ...sheets };
+  const currentSheetCopy = sheets[activeSheet].map(r => [...r]);
+  let replacementsMade = 0;
+
+  for (let r = 0; r < currentSheetCopy.length; r++) {
+    for (let c = 0; c < currentSheetCopy[r].length; c++) {
+      const cell = currentSheetCopy[r][c];
+      if (cell && cell.value.toLowerCase().includes(findSearchTerm.toLowerCase())) {
+        const newValue = cell.value.replace(new RegExp(findSearchTerm, 'gi'), findReplaceTerm);
+        currentSheetCopy[r][c] = { ...cell, value: newValue, formula: undefined }; // Clear formula if value changes directly
+        replacementsMade++;
+      }
+    }
+  }
+  updatedSheets[activeSheet] = currentSheetCopy;
+  pushToUndoStack(updatedSheets);
+  alert(`${replacementsMade} replacements made.`);
+  setShowFindModal(false);
+  setFindSearchTerm('');
+  setFindReplaceTerm('');
+  setFindMatches([]);
+  setFindCurrentMatch(null);
+  setFindMatchIndex(0);
+};
+
+// Data Validation Functions
+const handleApplyDataValidation = () => {
+  if (!selection.current) {
+    alert("Please select a range to apply data validation.");
+    return;
+  }
+  setShowDataValidationModal(true);
+  setShowDataDropdown(false);
+};
+
+const addDataValidationRule = () => {
+  if (!selection.current) {
+    alert("No range selected for data validation.");
+    return;
+  }
+
+  const { x, y, width, height } = selection.current.range;
+  const updatedSheets = { ...sheets };
+  const currentSheetCopy = sheets[activeSheet].map(r => [...r]);
+
+  for (let row = y; row < y + height; row++) {
+    const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+    if (originalRowIndex === undefined || originalRowIndex === -1) continue;
+
+    for (let col = x; col < x + width; col++) {
+      const cell = currentSheetCopy[originalRowIndex]?.[col] ?? { value: "" };
+      const validationRule: CellData['dataValidation'] = { type: dvType };
+
+      if (dvType === 'number' || dvType === 'text') {
+        validationRule.operator = dvOperator;
+        validationRule.value1 = dvValue1;
+        if (dvOperator === 'between') {
+          validationRule.value2 = dvValue2;
+        }
+      } else if (dvType === 'list') {
+        const parsedRange = parseCellName(dvSourceRange.split(':')[0]);
+        const parsedEndRange = parseCellName(dvSourceRange.split(':')[1]);
+        if (parsedRange && parsedEndRange) {
+          validationRule.sourceRange = {
+            x: Math.min(parsedRange[0], parsedEndRange[0]),
+            y: Math.min(parsedRange[1], parsedEndRange[1]),
+            width: Math.abs(parsedRange[0] - parsedEndRange[0]) + 1,
+            height: Math.abs(parsedRange[1] - parsedEndRange[1]) + 1,
+          };
+        } else {
+          alert("Invalid source range for list validation.");
+          return;
+        }
+      }
+
+      currentSheetCopy[originalRowIndex][col] = { ...cell, dataValidation: validationRule };
+    }
+  }
+  updatedSheets[activeSheet] = currentSheetCopy;
+  pushToUndoStack(updatedSheets);
+  setShowDataValidationModal(false);
+  // Reset DV states
+  setDvType('number');
+  setDvOperator('greaterThan');
+  setDvValue1('');
+  setDvValue2('');
+  setDvSourceRange('');
+  setDataUpdateKey(prev => prev + 1);
+};
+
+const clearDataValidation = () => {
+  if (!selection.current) {
+    alert("Please select a range to clear data validation.");
+    return;
+  }
+  const { x, y, width, height } = selection.current.range;
+  const updatedSheets = { ...sheets };
+  const currentSheetCopy = sheets[activeSheet].map(r => [...r]);
+
+  for (let row = y; row < y + height; row++) {
+    const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+    if (originalRowIndex === undefined || originalRowIndex === -1) continue;
+
+    for (let col = x; col < x + width; col++) {
+      const cell = currentSheetCopy[originalRowIndex]?.[col];
+      if (cell) {
+        const { dataValidation, ...rest } = cell; // Remove dataValidation property
+        currentSheetCopy[originalRowIndex][col] = rest;
+      }
+    }
+  }
+  updatedSheets[activeSheet] = currentSheetCopy;
+  pushToUndoStack(updatedSheets);
+  setShowDataDropdown(false);
+  setDataUpdateKey(prev => prev + 1);
+};
+
+// Named Ranges Functions
+const handleManageNamedRanges = () => {
+  setShowNamedRangesModal(true);
+  setShowDataDropdown(false);
+};
+
+const addNamedRange = () => {
+  if (!newNamedRangeName.trim() || !newNamedRangeRef.trim()) {
+    alert("Please enter both a name and a reference for the named range.");
+    return;
+  }
+  if (namedRanges.some(nr => nr.name.toLowerCase() === newNamedRangeName.toLowerCase() && nr.id !== editingNamedRangeId)) {
+    alert("A named range with this name already exists.");
+    return;
+  }
+
+  const rangeMatch = newNamedRangeRef.match(/^([A-Z]+\d+)(?::([A-Z]+\d+))?$/i);
+  if (!rangeMatch) {
+    alert("Invalid cell or range reference format (e.g., A1 or A1:B5).");
+    return;
+  }
+  const startCell = parseCellName(rangeMatch[1]);
+  const endCell = rangeMatch[2] ? parseCellName(rangeMatch[2]) : startCell;
+
+  if (!startCell || !endCell) {
+    alert("Invalid cell or range reference.");
+    return;
+  }
+
+  const [sx, sy] = startCell;
+  const [ex, ey] = endCell;
+  const x = Math.min(sx, ex);
+  const y = Math.min(sy, ey);
+  const width = Math.abs(sx - ex) + 1;
+  const height = Math.abs(sy - ey) + 1;
+
+  const newRange: NamedRange = {
+    id: editingNamedRangeId || Date.now().toString(),
+    name: newNamedRangeName.trim(),
+    range: { x, y, width, height },
+  };
+
+  if (editingNamedRangeId) {
+    setNamedRanges(prev => prev.map(nr => nr.id === editingNamedRangeId ? newRange : nr));
+    setEditingNamedRangeId(null);
+  } else {
+    setNamedRanges(prev => [...prev, newRange]);
+  }
+  setNewNamedRangeName('');
+  setNewNamedRangeRef('');
+  setDataUpdateKey(prev => prev + 1); // Formulas might need re-evaluation
+};
+
+const editNamedRange = (id: string) => {
+  const rangeToEdit = namedRanges.find(nr => nr.id === id);
+  if (rangeToEdit) {
+    setNewNamedRangeName(rangeToEdit.name);
+    setNewNamedRangeRef(`${getCellName(rangeToEdit.range.x, rangeToEdit.range.y)}:${getCellName(rangeToEdit.range.x + rangeToEdit.range.width - 1, rangeToEdit.range.y + rangeToEdit.range.height - 1)}`);
+    setEditingNamedRangeId(id);
+  }
+};
+
+const deleteNamedRange = (id: string) => {
+  setNamedRanges(prev => prev.filter(nr => nr.id !== id));
+  setDataUpdateKey(prev => prev + 1); // Formulas might need re-evaluation
+};
+
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', fontFamily: 'Roboto, sans-serif', color: '#202124' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', fontFamily: 'Roboto, sans-serif', color: currentTheme.text, backgroundColor: currentTheme.bg }}>
       {/* Top Bar - Google Sheets like */}
       <div style={{
-        backgroundColor: '#fff',
-        borderBottom: '1px solid #dadce0',
+        backgroundColor: currentTheme.bg,
+        borderBottom: `1px solid ${currentTheme.border}`,
         padding: '8px 16px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         flexShrink: 0,
-        boxShadow: '0 1px 2px 0 rgba(60,64,67,0.08)',
+        boxShadow: currentTheme.shadow,
       }}>
         {/* Left Section: Logo, Title, Menu Bar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           {/* Logo Placeholder */}
-          <span style={{ fontSize: '24px', color: '#1a73e8', fontWeight: 'bold' }}>
+          <span style={{ fontSize: '24px', color: currentTheme.activeTabBorder, fontWeight: 'bold' }}>
             Sheets
           </span>
           {/* Spreadsheet Name Input */}
@@ -1564,10 +2348,11 @@ const applyCommentToCell = () => {
             style={{
               padding: '6px 10px',
               borderRadius: '4px',
-              border: '1px solid #dadce0',
+              border: `1px solid ${currentTheme.border}`,
               fontSize: '15px',
               fontWeight: 500,
-              color: '#202124',
+              color: currentTheme.text,
+              backgroundColor: currentTheme.bg,
               width: '200px',
             }}
           />
@@ -1575,39 +2360,39 @@ const applyCommentToCell = () => {
           {/* Menu Bar */}
           <div style={{ display: 'flex', gap: '2px', marginLeft: '20px' }}>
             {/* File Menu */}
-            <div 
+            <div
               style={{ position: "relative" }}
               onMouseEnter={() => setShowFileDropdown(true)}
               onMouseLeave={() => { setShowFileDropdown(false); setShowImportDropdown(false); setShowExportDropdown(false); }}
             >
-              <button style={topBarButtonStyle}>File</button>
+              <button style={{...topBarButtonStyle, color: currentTheme.text}}>File</button>
               {showFileDropdown && (
-                <div style={menuDropdownStyle}>
-                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={saveSheetData} style={menuItem}>Save</button>
-                  <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }}></div>
-                  
+                <div style={{...menuDropdownStyle, backgroundColor: currentTheme.menuBg, border: `1px solid ${currentTheme.border}`, boxShadow: currentTheme.shadow}}>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={saveSheetData} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Save</button>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+
                   {/* Import Sub-menu */}
-                  <div 
+                  <div
                     style={{ position: "relative" }}
                     onMouseEnter={() => setShowImportDropdown(true)}
                     onMouseLeave={() => setShowImportDropdown(false)}
                   >
-                    <button style={menuItem}>Import</button> {/* Right arrow for sub-menu */}
+                    <button style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Import &#x25B6;</button> {/* Right arrow for sub-menu */}
                     {showImportDropdown && (
-                      <div style={subMenuDropdownStyle}>
-                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} style={menuItem}>
+                      <div style={{...subMenuDropdownStyle, backgroundColor: currentTheme.menuBg, border: `1px solid ${currentTheme.border}`, boxShadow: currentTheme.shadow}}>
+                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>
                           Import XLSX
                           <input type="file" accept=".xlsx" onChange={importFromExcel} style={{ display: "none" }} />
                         </label>
-                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} style={menuItem}>
+                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>
                           Import JSON
                           <input type="file" accept="application/json" onChange={handleImportFromJSON} style={{ display: "none" }} />
                         </label>
-                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} style={menuItem}>
+                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>
                           Import CSV
                           <input type="file" accept=".csv" onChange={importFromCSV} style={{ display: "none" }} />
                         </label>
-                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} style={menuItem}>
+                        <label onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>
                           Import ODS
                           <input type="file" accept=".ods" onChange={handleODSImport} style={{ display: "none" }} />
                         </label>
@@ -1616,20 +2401,20 @@ const applyCommentToCell = () => {
                   </div>
 
                   {/* Export Sub-menu */}
-                  <div 
+                  <div
                     style={{ position: "relative" }}
                     onMouseEnter={() => setShowExportDropdown(true)}
                     onMouseLeave={() => setShowExportDropdown(false)}
                   >
-                    <button style={menuItem}>Export</button> 
+                    <button style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Export &#x25B6;</button> {/* Right arrow for sub-menu */}
                     {showExportDropdown && (
-                      <div style={subMenuDropdownStyle}>
-                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleExportXLSX} style={menuItem}>Export as XLSX</button>
-                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleExportToJSON} style={menuItem}>Export as JSON</button>
-                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={exportToCSV} style={menuItem}>Export as CSV</button>
-                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleODSExport} style={menuItem}>Export as ODS</button>
-                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleExportTSV} style={menuItem}>Export as TSV</button>
-                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleExportPDF} style={menuItem}>Export as PDF</button>
+                      <div style={{...subMenuDropdownStyle, backgroundColor: currentTheme.menuBg, border: `1px solid ${currentTheme.border}`, boxShadow: currentTheme.shadow}}>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleExportXLSX} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Export as XLSX</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleExportToJSON} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Export as JSON</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={exportToCSV} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Export as CSV</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleODSExport} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Export as ODS</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleExportTSV} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Export as TSV</button>
+                        <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleExportPDF} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Export as PDF</button>
                       </div>
                     )}
                   </div>
@@ -1638,53 +2423,80 @@ const applyCommentToCell = () => {
             </div>
 
             {/* Edit Menu */}
-            <div 
+            <div
               style={{ position: "relative" }}
               onMouseEnter={() => setShowEditDropdown(true)}
               onMouseLeave={() => setShowEditDropdown(false)}
             >
-              <button style={topBarButtonStyle}>Edit</button>
+              <button style={{...topBarButtonStyle, color: currentTheme.text}}>Edit</button>
               {showEditDropdown && (
-                <div style={menuDropdownStyle}>
-                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleUndo} disabled={undoStack.length === 0} style={{...menuItem, opacity: undoStack.length === 0 ? 0.5 : 1}}>Undo</button>
-                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleRedo} disabled={redoStack.length === 0} style={{...menuItem, opacity: redoStack.length === 0 ? 0.5 : 1}}>Redo</button>
-                  <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }}></div>
-                  {/* Removed: Cut, Copy, Paste */}
-                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleInsertRowAbove} style={menuItem}>Insert Row Above</button>
-                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleInsertRowBelow} style={menuItem}>Insert Row Below</button>
-                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleDeleteSelectedRows} style={menuItem}>Delete Selected Rows</button>
+                <div style={{...menuDropdownStyle, backgroundColor: currentTheme.menuBg, border: `1px solid ${currentTheme.border}`, boxShadow: currentTheme.shadow}}>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleUndo} disabled={undoStack.length === 0} style={{...menuItem, opacity: undoStack.length === 0 ? 0.5 : 1, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Undo</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleRedo} disabled={redoStack.length === 0} style={{...menuItem, opacity: redoStack.length === 0 ? 0.5 : 1, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Redo</button>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleInsertRowAbove} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Insert Row Above</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleInsertRowBelow} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Insert Row Below</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleInsertColumnLeft} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Insert Column Left</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleInsertColumnRight} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Insert Column Right</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleDeleteSelectedRows} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Delete Selected Rows</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleDeleteSelectedColumns} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Delete Selected Columns</button>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => setShowFindModal(true)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Find and Replace...</button>
+                </div>
+              )}
+            </div>
+
+            {/* View Menu */}
+            <div
+              style={{ position: "relative" }}
+              onMouseEnter={() => setShowViewDropdown(true)}
+              onMouseLeave={() => setShowViewDropdown(false)}
+            >
+              <button style={{...topBarButtonStyle, color: currentTheme.text}}>View</button>
+              {showViewDropdown && (
+                <div style={{...menuDropdownStyle, backgroundColor: currentTheme.menuBg, border: `1px solid ${currentTheme.border}`, boxShadow: currentTheme.shadow}}>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => handleFreezeRows(1)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Freeze 1 row</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => handleFreezeRows(2)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Freeze 2 rows</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => handleFreezeRows(-1)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Freeze up to current row</button>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => handleFreezeColumns(1)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Freeze 1 column</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => handleFreezeColumns(2)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Freeze 2 columns</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => handleFreezeColumns(-1)} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Freeze up to current column</button>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleUnfreezePanes} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>No frozen panes</button>
                 </div>
               )}
             </div>
 
             {/* Insert Menu */}
-            <div 
+            <div
               style={{ position: "relative" }}
               onMouseEnter={() => setShowInsertDropdown(true)}
               onMouseLeave={() => setShowInsertDropdown(false)}
             >
-              <button style={topBarButtonStyle}>Insert</button>
+              <button style={{...topBarButtonStyle, color: currentTheme.text}}>Insert</button>
               {showInsertDropdown && (
-                <div style={menuDropdownStyle}>
-                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleInsertLink} style={menuItem}>Link</button>
-                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={handleInsertComment} style={menuItem}>Comment</button>
-                  {/* Removed Row above and Row below */}
+                <div style={{...menuDropdownStyle, backgroundColor: currentTheme.menuBg, border: `1px solid ${currentTheme.border}`, boxShadow: currentTheme.shadow}}>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleInsertLink} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Link</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleInsertComment} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Comment</button>
                 </div>
               )}
             </div>
-            <div 
+
+            {/* Format Menu - Now mostly moved to toolbar, keeping as placeholder for future */}
+            <div
               style={{ position: "relative" }}
               onMouseEnter={() => setShowFormatDropdown(true)}
               onMouseLeave={() => setShowFormatDropdown(false)}
             >
-              <button style={topBarButtonStyle}>Format</button>
+              <button style={{...topBarButtonStyle, color: currentTheme.text}}>Format</button>
               {showFormatDropdown && (
-                <div style={menuDropdownStyle}>
+                <div style={{...menuDropdownStyle, backgroundColor: currentTheme.menuBg, border: `1px solid ${currentTheme.border}`, boxShadow: currentTheme.shadow}}>
                   {/* These were moved to the main toolbar */}
-                  <div style={{ padding: '8px 16px', fontWeight: 'bold', fontSize: '13px', color: '#5f6368' }}>Text Styles</div>
+                  <div style={{ padding: '8px 16px', fontWeight: 'bold', fontSize: '13px', color: currentTheme.textLight }}>Text Styles</div>
                   <select
                     onChange={(e) => applyStyleToRange("fontSize",parseInt(e.target.value))}
-                    style={{...menuItem, width: 'calc(100% - 16px)', margin: '4px 8px'}}
+                    style={{...menuItem, width: 'calc(100% - 16px)', margin: '4px 8px', color: currentTheme.text, backgroundColor: currentTheme.bg, border: `1px solid ${currentTheme.border}`}}
                   >
                     <option value="">Font Size</option>
                     {[10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32].map(size => (
@@ -1693,7 +2505,7 @@ const applyCommentToCell = () => {
                   </select>
                   <select
                     onChange={(e) => applyStyleToRange("fontFamily", e.target.value)}
-                    style={{...menuItem, width: 'calc(100% - 16px)', margin: '4px 8px'}}
+                    style={{...menuItem, width: 'calc(100% - 16px)', margin: '4px 8px', color: currentTheme.text, backgroundColor: currentTheme.bg, border: `1px solid ${currentTheme.border}`}}
                     value={selection?.current ? sheets[activeSheet]?.[selection.current.range.y]?.[selection.current.range.x]?.fontFamily || 'Arial, sans-serif' : 'Arial, sans-serif'}
                   >
                     <option value="">Font Family</option>
@@ -1708,42 +2520,80 @@ const applyCommentToCell = () => {
                     <option value="Lucida Console, monospace">Lucida Console</option>
                   </select>
                   <div style={{ display: "flex", gap: "2px", padding: '4px 8px' }}>
-                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={() => applyStyleToRange("bold",true)} style={{...topBarButtonStyle, fontWeight: "bold", border: '1px solid #dadce0'}}>B</button>
-                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={() => applyStyleToRange("italic",true)} style={{...topBarButtonStyle, fontStyle: "italic", border: '1px solid #dadce0'}}>I</button>
-                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={() => applyStyleToRange("underline",true)} style={{...topBarButtonStyle, textDecoration: "underline", border: '1px solid #dadce0'}}>U</button>
-                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e6e6e6')} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'white')} onClick={() => applyStyleToRange("strikethrough",true)} style={{...topBarButtonStyle, textDecoration: "line-through", border: '1px solid #dadce0'}}>S</button>
+                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => applyStyleToRange("bold",true)} style={{...topBarButtonStyle, fontWeight: "bold", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>B</button>
+                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => applyStyleToRange("italic",true)} style={{...topBarButtonStyle, fontStyle: "italic", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>I</button>
+                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => applyStyleToRange("underline",true)} style={{...topBarButtonStyle, textDecoration: "underline", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>U</button>
+                    <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => applyStyleToRange("strikethrough",true)} style={{...topBarButtonStyle, textDecoration: "line-through", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>S</button>
                   </div>
-                  <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }}></div>
-                  <div style={{ padding: '8px 16px', fontWeight: 'bold', fontSize: '13px', color: '#5f6368' }}>Colors</div>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <div style={{ padding: '8px 16px', fontWeight: 'bold', fontSize: '13px', color: currentTheme.textLight }}>Colors</div>
                   <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: '4px 8px' }}>
-                    <label style={{ fontSize: "12px", fontWeight: 500 }}>Text:</label>
+                    <label style={{ fontSize: "12px", fontWeight: 500, color: currentTheme.textLight }}>Text:</label>
                     <input type="color" onChange={(e) => applyStyleToRange("textColor", e.target.value)} style={{ width: "24px", height: "24px", border: "none", borderRadius: "50%", cursor: "pointer" }} />
-                    <label style={{ fontSize: "12px", fontWeight: 500 }}>Fill:</label>
+                    <label style={{ fontSize: "12px", fontWeight: 500, color: currentTheme.textLight }}>Fill:</label>
                     <input type="color" onChange={(e) => applyStyleToRange("bgColor", e.target.value)} style={{ width: "24px", height: "24px", border: "none", borderRadius: "50%", cursor: "pointer" }} />
-                    <label style={{ fontSize: "12px", fontWeight: 500 }}>Border:</label>
+                    <label style={{ fontSize: "12px", fontWeight: 500, color: currentTheme.textLight }}>Border:</label>
                     <input type="color" onChange={(e) => applyStyleToRange("borderColor", e.target.value)} style={{ width: "24px", height: "24px", border: "none", borderRadius: "50%", cursor: "pointer" }} />
                   </div>
-                  <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }}></div>
-                  <div style={{ padding: '8px 16px', fontWeight: 'bold', fontSize: '13px', color: '#5f6368' }}>Alignment</div>
-                  <select
-                    onChange={(e) => applyStyleToRange("alignment",e.target.value as "left" | "center" | "right")}
-                    style={{...menuItem, width: 'calc(100% - 16px)', margin: '4px 8px'}}
-                  >
-                    <option value="left">Left</option>
-                    <option value="center">Center</option>
-                    <option value="right">Right</option>
-                  </select>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleApplyConditionalFormatting} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Conditional Formatting...</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={clearConditionalFormatting} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Clear Conditional Formatting</button>
+                </div>
+              )}
+            </div>
+
+            {/* Data Menu */}
+            <div
+              style={{ position: "relative" }}
+              onMouseEnter={() => setShowDataDropdown(true)}
+              onMouseLeave={() => setShowDataDropdown(false)}
+            >
+              <button style={{...topBarButtonStyle, color: currentTheme.text}}>Data</button>
+              {showDataDropdown && (
+                <div style={{...menuDropdownStyle, backgroundColor: currentTheme.menuBg, border: `1px solid ${currentTheme.border}`, boxShadow: currentTheme.shadow}}>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => handleSort('asc')} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Sort sheet A-Z (Current Column)</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={() => handleSort('desc')} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Sort sheet Z-A (Current Column)</button>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={toggleFilterRow} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Toggle Filter Row</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={clearAllFilters} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Clear All Filters</button>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleApplyDataValidation} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Data Validation...</button>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={clearDataValidation} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Clear Data Validation</button>
+                  <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '4px 0' }}></div>
+                  <button onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)} onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuBg)} onClick={handleManageNamedRanges} style={{...menuItem, color: currentTheme.text, backgroundColor: currentTheme.menuBg}}>Named Ranges...</button>
                 </div>
               )}
             </div>
           </div>
         </div>
+
+        {/* Toggle Theme Button */}
+        <div>
+          <button
+            onClick={() => setIsDarkMode(prev => !prev)}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = isDarkMode ? '#5f6368' : '#e8eaed')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            style={{
+              padding: '8px 12px',
+              background: 'transparent',
+              color: currentTheme.text,
+              border: `1px solid ${currentTheme.border}`,
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: 500,
+              marginRight:'50px'
+            }}
+          >
+            {isDarkMode ? 'Light Mode' : 'Dark Mode'}
+          </button>
+        </div>
       </div>
 
       {/* Formatting Toolbar */}
       <div style={{
-        backgroundColor: '#f8f9fa',
-        borderBottom: '1px solid #dadce0',
+        backgroundColor: currentTheme.bg2,
+        borderBottom: `1px solid ${currentTheme.border}`,
         padding: '8px 16px',
         display: 'flex',
         alignItems: 'center',
@@ -1755,13 +2605,13 @@ const applyCommentToCell = () => {
         <button
             onClick={handleUndo}
             disabled={undoStack.length === 0}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
             style={{
                 padding: "6px 10px",
                 background: "transparent",
-                color: "#202124",
-                border: "1px solid #dadce0",
+                color: currentTheme.text,
+                border: `1px solid ${currentTheme.border}`,
                 borderRadius: "4px",
                 cursor: "pointer",
                 opacity: undoStack.length === 0 ? 0.5 : 1,
@@ -1776,13 +2626,13 @@ const applyCommentToCell = () => {
         <button
             onClick={handleRedo}
             disabled={redoStack.length === 0}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
             style={{
                 padding: "6px 10px",
                 background: "transparent",
-                color: "#202124",
-                border: "1px solid #dadce0",
+                color: currentTheme.text,
+                border: `1px solid ${currentTheme.border}`,
                 borderRadius: "4px",
                 cursor: "pointer",
                 opacity: redoStack.length === 0 ? 0.5 : 1,
@@ -1795,7 +2645,7 @@ const applyCommentToCell = () => {
             &#x21BB;
         </button>
 
-        <div style={{ width: '1px', height: '24px', backgroundColor: '#dadce0', margin: '0 5px' }}></div> {/* Divider */}
+        <div style={{ width: '1px', height: '24px', backgroundColor: currentTheme.border, margin: '0 5px' }}></div> {/* Divider */}
 
         {/* Font Family */}
         <select
@@ -1803,11 +2653,11 @@ const applyCommentToCell = () => {
           style={{
             padding: "6px 10px",
             borderRadius: "4px",
-            border: "1px solid #dadce0",
+            border: `1px solid ${currentTheme.border}`,
             minWidth: "120px",
             fontSize: '13px',
-            color: '#202124',
-            backgroundColor: 'white',
+            color: currentTheme.text,
+            backgroundColor: currentTheme.bg,
           }}
           value={selection?.current ? sheets[activeSheet]?.[selection.current.range.y]?.[selection.current.range.x]?.fontFamily || 'Arial, sans-serif' : 'Arial, sans-serif'}
         >
@@ -1828,11 +2678,11 @@ const applyCommentToCell = () => {
           style={{
             padding: "6px 10px",
             borderRadius: "4px",
-            border: "1px solid #dadce0",
+            border: `1px solid ${currentTheme.border}`,
             minWidth: "70px",
             fontSize: '13px',
-            color: '#202124',
-            backgroundColor: 'white',
+            color: currentTheme.text,
+            backgroundColor: currentTheme.bg,
           }}
         >
           {[10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32].map(size => (
@@ -1840,106 +2690,110 @@ const applyCommentToCell = () => {
           ))}
         </select>
 
-        <div style={{ width: '1px', height: '24px', backgroundColor: '#dadce0', margin: '0 5px' }}></div> {/* Divider */}
+        <div style={{ width: '1px', height: '24px', backgroundColor: currentTheme.border, margin: '0 5px' }}></div> {/* Divider */}
 
         {/* Font Styles (Bold, Italic, Underline, Strikethrough) */}
         <button
           onClick={() => applyStyleToRange("bold",true)}
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
           style={{
             ...topBarButtonStyle,
             fontWeight: "bold",
-            border: '1px solid #dadce0',
+            border: `1px solid ${currentTheme.border}`,
             fontSize: '16px',
+            color: currentTheme.text,
           }}
         >B</button>
         <button
           onClick={() => applyStyleToRange("italic",true)}
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
           style={{
             ...topBarButtonStyle,
             fontStyle: "italic",
-            border: '1px solid #dadce0',
+            border: `1px solid ${currentTheme.border}`,
             fontSize: '16px',
+            color: currentTheme.text,
           }}
         >I</button>
         <button
-          onClick={() => applyStyleToRange("underline",true)} 
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+          onClick={() => applyStyleToRange("underline",true)}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
           style={{
             ...topBarButtonStyle,
             textDecoration: "underline",
-            border: '1px solid #dadce0',
+            border: `1px solid ${currentTheme.border}`,
             fontSize: '16px',
+            color: currentTheme.text,
           }}
         >U</button>
         <button
-          onClick={() => applyStyleToRange("strikethrough",true)} 
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8eaed')}
+          onClick={() => applyStyleToRange("strikethrough",true)}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = currentTheme.menuHoverBg)}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
           style={{
             ...topBarButtonStyle,
             textDecoration: "line-through",
-            border: '1px solid #dadce0',
+            border: `1px solid ${currentTheme.border}`,
             fontSize: '16px',
+            color: currentTheme.text,
           }}
         >S</button>
 
-        <div style={{ width: '1px', height: '24px', backgroundColor: '#dadce0', margin: '0 5px' }}></div> {/* Divider */}
+        <div style={{ width: '1px', height: '24px', backgroundColor: currentTheme.border, margin: '0 5px' }}></div> {/* Divider */}
 
         {/* Text Color */}
         <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-          <label style={{ fontSize: "12px", fontWeight: 500, color: '#5f6368' }}>Text:</label>
+          <label style={{ fontSize: "12px", fontWeight: 500, color: currentTheme.textLight }}>Text:</label>
           <input
             type="color"
             onChange={(e) => applyStyleToRange("textColor", e.target.value)}
             style={{
               width: "28px",
               height: "28px",
-              border: "1px solid #dadce0",
+              border: `1px solid ${currentTheme.border}`,
               borderRadius: "4px",
               cursor: "pointer",
-              backgroundColor: 'white',
+              backgroundColor: currentTheme.bg,
             }}
           />
         </div>
         {/* Background Color */}
         <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-          <label style={{ fontSize: "12px", fontWeight: 500, color: '#5f6368' }}>Fill:</label>
+          <label style={{ fontSize: "12px", fontWeight: 500, color: currentTheme.textLight }}>Fill:</label>
           <input
             type="color"
             onChange={(e) => applyStyleToRange("bgColor", e.target.value)}
             style={{
               width: "28px",
               height: "28px",
-              border: "1px solid #dadce0",
+              border: `1px solid ${currentTheme.border}`,
               borderRadius: "4px",
               cursor: "pointer",
-              backgroundColor: 'white',
+              backgroundColor: currentTheme.bg,
             }}
           />
         </div>
         {/* Border Color */}
         <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-          <label style={{ fontSize: "12px", fontWeight: 500, color: '#5f6368' }}>Border:</label>
+          <label style={{ fontSize: "12px", fontWeight: 500, color: currentTheme.textLight }}>Border:</label>
           <input
             type="color"
             onChange={(e) => applyStyleToRange("borderColor", e.target.value)}
             style={{
               width: "28px",
               height: "28px",
-              border: "1px solid #dadce0",
+              border: `1px solid ${currentTheme.border}`,
               borderRadius: "4px",
               cursor: "pointer",
-              backgroundColor: 'white',
+              backgroundColor: currentTheme.bg,
             }}
           />
         </div>
 
-        <div style={{ width: '1px', height: '24px', backgroundColor: '#dadce0', margin: '0 5px' }}></div> {/* Divider */}
+        <div style={{ width: '1px', height: '24px', backgroundColor: currentTheme.border, margin: '0 5px' }}></div> {/* Divider */}
 
         {/* Alignment */}
         <select
@@ -1947,11 +2801,11 @@ const applyCommentToCell = () => {
           style={{
             padding: "6px 10px",
             borderRadius: "4px",
-            border: "1px solid #dadce0",
+            border: `1px solid ${currentTheme.border}`,
             minWidth: "90px",
             fontSize: '13px',
-            color: '#202124',
-            backgroundColor: 'white',
+            color: currentTheme.text,
+            backgroundColor: currentTheme.bg,
           }}
         >
           <option value="left">Left</option>
@@ -1963,8 +2817,8 @@ const applyCommentToCell = () => {
 
       {/* Formula Bar */}
       <div style={{
-        backgroundColor: '#f8f9fa',
-        borderBottom: '1px solid #dadce0',
+        backgroundColor: currentTheme.bg2,
+        borderBottom: `1px solid ${currentTheme.border}`,
         padding: '8px 16px',
         display: 'flex',
         flexDirection: 'column', /* Changed to column to stack elements */
@@ -1974,16 +2828,16 @@ const applyCommentToCell = () => {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}> {/* New wrapper for input and cell ref */}
           {/* Cell Reference Display */}
-          <div style={{ 
-            minWidth: '60px', 
-            fontWeight: 'bold', 
-            fontSize: '14px', 
-            color: '#5f6368', 
+          <div style={{
+            minWidth: '60px',
+            fontWeight: 'bold',
+            fontSize: '14px',
+            color: currentTheme.textLight,
             marginRight: '10px',
             padding: '4px 8px',
-            border: '1px solid #dadce0',
+            border: `1px solid ${currentTheme.border}`,
             borderRadius: "4px",
-            backgroundColor: '#fff',
+            backgroundColor: currentTheme.bg,
             textAlign: 'center',
           }}>
             {activeCell.current ? getCellName(activeCell.current[0], activeCell.current[1]) : 'A1'}
@@ -2011,15 +2865,17 @@ const applyCommentToCell = () => {
               }
             }}
             placeholder="Enter formula or text"
-            style={{ 
-              flexGrow: 1, 
-              padding: "8px 12px", 
-              border: "1px solid #dadce0", 
-              borderRadius: "4px", 
+            style={{
+              flexGrow: 1,
+              padding: "8px 12px",
+              border: `1px solid ${currentTheme.border}`,
+              borderRadius: "4px",
               fontSize: "14px",
               outline: 'none',
-              boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.06)',
-            }} 
+              boxShadow: `inset 0 1px 2px ${isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)'}`,
+              color: currentTheme.text,
+              backgroundColor: currentTheme.bg,
+            }}
           />
         </div>
         {formulaError && (
@@ -2031,10 +2887,10 @@ const applyCommentToCell = () => {
           <div
             style={{
               position: "absolute",
-              background: "white",
-              border: "1px solid #ccc",
+              background: currentTheme.menuBg,
+              border: `1px solid ${currentTheme.border}`,
               borderRadius: "4px",
-              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
+              boxShadow: currentTheme.shadow,
               zIndex: 1000,
               width: "calc(100% - 100px)", /* Adjust width to match input */
               marginTop: "4px",
@@ -2052,8 +2908,9 @@ const applyCommentToCell = () => {
                 style={{
                   padding: "6px 8px",
                   cursor: "pointer",
-                  borderBottom: idx === suggestions.length - 1 ? "none" : "1px solid #eee",
-                  backgroundColor: "#fff",
+                  borderBottom: idx === suggestions.length - 1 ? "none" : `1px solid ${currentTheme.border}`,
+                  backgroundColor: currentTheme.menuBg,
+                  color: currentTheme.text,
                   fontSize: '13px',
                 }}
                 onMouseDown={(e) => e.preventDefault()} /* Prevent blur on click */
@@ -2065,6 +2922,42 @@ const applyCommentToCell = () => {
         )}
       </div>
 
+      {/* Filter Row */}
+      {showFilterRow && (
+        <div style={{
+          backgroundColor: currentTheme.bg2, // Light grey background for filter row
+          borderBottom: `1px solid ${currentTheme.border}`,
+          padding: '4px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          flexShrink: 0,
+        }}>
+          {/* Empty cell for row markers */}
+          <div style={{ width: '60px', flexShrink: 0 }}></div>
+          {columns.map((col, index) => (
+            <input
+              key={col.id}
+              type="text"
+              placeholder={`Filter ${col.title}`}
+              value={columnFilters[index] || ''}
+              onChange={(e) => handleColumnFilterChange(index, e.target.value)}
+              style={{
+                width: columnWidths[index] ?? 100, // Corrected access to width
+                minWidth: '50px', // Ensure min-width for filter inputs
+                padding: '4px 8px',
+                border: `1px solid ${currentTheme.border}`,
+                borderRadius: '4px',
+                marginRight: '2px', // Small gap between filter inputs
+                fontSize: '12px',
+                color: currentTheme.text,
+                backgroundColor: currentTheme.bg,
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+
       {/* Link Input Modal */}
       {showLinkInput && (
         <div style={{
@@ -2072,14 +2965,15 @@ const applyCommentToCell = () => {
           top: "50%",
           left: "50%",
           transform: "translate(-50%, -50%)",
-          backgroundColor: "white",
+          backgroundColor: currentTheme.bg,
           padding: "20px",
           borderRadius: "8px",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+          boxShadow: currentTheme.shadow,
           zIndex: 2000,
           display: "flex",
           flexDirection: "column",
           gap: "10px",
+          color: currentTheme.text,
         }}>
           <h3>Insert Link</h3>
           <input
@@ -2087,7 +2981,7 @@ const applyCommentToCell = () => {
             value={linkValue}
             onChange={(e) => setLinkValue(e.target.value)}
             placeholder="Enter URL"
-            style={{ padding: "8px", borderRadius: "4px", border: "1px solid #ccc" }}
+            style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
           />
           <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
             <button onClick={applyLinkToCell} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Apply</button>
@@ -2103,14 +2997,15 @@ const applyCommentToCell = () => {
           top: "50%",
           left: "50%",
           transform: "translate(-50%, -50%)",
-          backgroundColor: "white",
+          backgroundColor: currentTheme.bg,
           padding: "20px",
           borderRadius: "8px",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+          boxShadow: currentTheme.shadow,
           zIndex: 2000,
           display: "flex",
           flexDirection: "column",
           gap: "10px",
+          color: currentTheme.text,
         }}>
           <h3>Insert Comment</h3>
           <textarea
@@ -2118,7 +3013,7 @@ const applyCommentToCell = () => {
             onChange={(e) => setCommentValue(e.target.value)}
             placeholder="Enter comment"
             rows={4}
-            style={{ padding: "8px", borderRadius: "4px", border: "1px solid #ccc", minWidth: "250px" }}
+            style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, minWidth: "250px", color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
           />
           <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
             <button onClick={applyCommentToCell} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Apply</button>
@@ -2126,21 +3021,341 @@ const applyCommentToCell = () => {
           </div>
         </div>
       )}
+     
+      {/* Conditional Formatting Modal */}
+      {showConditionalFormattingModal && (
+        <div style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          backgroundColor: currentTheme.bg,
+          padding: "20px",
+          borderRadius: "8px",
+          boxShadow: currentTheme.shadow,
+          zIndex: 2000,
+          display: "flex",
+          flexDirection: "column",
+          gap: "15px",
+          color: currentTheme.text,
+        }}>
+          <h3>Conditional Formatting Rule</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <label>Apply to range:</label>
+            <input
+              type="text"
+              value={selection.current ? `${getCellName(selection.current.range.x, selection.current.range.y)}:${getCellName(selection.current.range.x + selection.current.range.width - 1, selection.current.range.y + selection.current.range.height - 1)}` : ''}
+              readOnly
+              style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, flexGrow: 1, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <label>Format cells if:</label>
+            <select
+              value={cfType}
+              onChange={(e) => setCfType(e.target.value as ConditionalFormattingRule['type'])}
+              style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            >
+              <option value="greaterThan">Greater than</option>
+              <option value="lessThan">Less than</option>
+              <option value="equalTo">Equal to</option>
+              <option value="between">Between</option>
+              <option value="textContains">Text contains</option>
+            </select>
+            <input
+              type={cfType === 'textContains' ? 'text' : 'number'}
+              value={cfValue1}
+              onChange={(e) => setCfValue1(e.target.value)}
+              placeholder="Value 1"
+              style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, width: '100px', color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            />
+            {cfType === 'between' && (
+              <input
+                type="number"
+                value={cfValue2}
+                onChange={(e) => setCfValue2(e.target.value)}
+                placeholder="Value 2"
+                style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, width: '100px', color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+              />
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <label>Background Color:</label>
+            <input
+              type="color"
+              value={cfBgColor}
+              onChange={(e) => setCfBgColor(e.target.value)}
+              style={{ width: "30px", height: "30px", border: "none", borderRadius: "4px", cursor: "pointer" }}
+            />
+            <label>Text Color:</label>
+            <input
+              type="color"
+              value={cfTextColor}
+              onChange={(e) => setCfTextColor(e.target.value)}
+              style={{ width: "30px", height: "30px", border: "none", borderRadius: "4px", cursor: "pointer" }}
+            />
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+            <button onClick={addConditionalFormattingRule} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Apply Rule</button>
+            <button onClick={() => setShowConditionalFormattingModal(false)} style={{ padding: "8px 12px", background: "#f44336", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Data Validation Modal */}
+      {showDataValidationModal && (
+        <div style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          backgroundColor: currentTheme.bg,
+          padding: "20px",
+          borderRadius: "8px",
+          boxShadow: currentTheme.shadow,
+          zIndex: 2000,
+          display: "flex",
+          flexDirection: "column",
+          gap: "15px",
+          color: currentTheme.text,
+        }}>
+          <h3>Data Validation Rule</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <label>Apply to range:</label>
+            <input
+              type="text"
+              value={selection.current ? `${getCellName(selection.current.range.x, selection.current.range.y)}:${getCellName(selection.current.range.x + selection.current.range.width - 1, selection.current.range.y + selection.current.range.height - 1)}` : ''}
+              readOnly
+              style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, flexGrow: 1, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <label>Criteria:</label>
+            <select
+              value={dvType}
+              onChange={(e) => { setDvType(e.target.value as 'number' | 'text' | 'date' | 'list'); setDvOperator('greaterThan'); setDvValue1(''); setDvValue2(''); setDvSourceRange(''); }}
+              style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            >
+              <option value="number">Number</option>
+              <option value="text">Text</option>
+              <option value="list">List from range</option>
+            </select>
+            {(dvType === 'number' || dvType === 'text') && (
+              <>
+                <select
+                  value={dvOperator}
+                  onChange={(e) => setDvOperator(e.target.value as 'greaterThan' | 'lessThan' | 'equalTo' | 'notEqualTo' | 'between' | 'textContains' | 'startsWith' | 'endsWith')}
+                  style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+                >
+                  {dvType === 'number' && (
+                    <>
+                      <option value="greaterThan">Greater than</option>
+                      <option value="lessThan">Less than</option>
+                      <option value="equalTo">Equal to</option>
+                      <option value="notEqualTo">Not equal to</option>
+                      <option value="between">Between</option>
+                    </>
+                  )}
+                  {dvType === 'text' && (
+                    <>
+                      <option value="textContains">Text contains</option>
+                      <option value="startsWith">Starts with</option>
+                      <option value="endsWith">Ends with</option>
+                    </>
+                  )}
+                </select>
+                <input
+                  type={dvType === 'number' ? 'number' : 'text'}
+                  value={dvValue1}
+                  onChange={(e) => setDvValue1(e.target.value)}
+                  placeholder="Value 1"
+                  style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, width: '100px', color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+                />
+                {dvOperator === 'between' && (
+                  <input
+                    type="number"
+                    value={dvValue2}
+                    onChange={(e) => setDvValue2(e.target.value)}
+                    placeholder="Value 2"
+                    style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, width: '100px', color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+                  />
+                )}
+              </>
+            )}
+            {dvType === 'list' && (
+              <input
+                type="text"
+                value={dvSourceRange}
+                onChange={(e) => setDvSourceRange(e.target.value)}
+                placeholder="e.g., A1:A5"
+                style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, flexGrow: 1, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+              />
+            )}
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+            <button onClick={addDataValidationRule} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Apply Rule</button>
+            <button onClick={() => setShowDataValidationModal(false)} style={{ padding: "8px 12px", background: "#f44336", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Named Ranges Modal */}
+      {showNamedRangesModal && (
+        <div style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          backgroundColor: currentTheme.bg,
+          padding: "20px",
+          borderRadius: "8px",
+          boxShadow: currentTheme.shadow,
+          zIndex: 2000,
+          display: "flex",
+          flexDirection: "column",
+          gap: "15px",
+          minWidth: '400px',
+          color: currentTheme.text,
+        }}>
+          <h3>Manage Named Ranges</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <input
+              type="text"
+              value={newNamedRangeName}
+              onChange={(e) => setNewNamedRangeName(e.target.value)}
+              placeholder="Named Range Name"
+              style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            />
+            <input
+              type="text"
+              value={newNamedRangeRef}
+              onChange={(e) => setNewNamedRangeRef(e.target.value)}
+              placeholder="e.g., A1 or A1:B5"
+              style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            />
+            <button onClick={addNamedRange} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>
+              {editingNamedRangeId ? 'Update Named Range' : 'Add Named Range'}
+            </button>
+          </div>
+
+          <div style={{ borderTop: `1px solid ${currentTheme.border}`, margin: '10px 0' }}></div>
+
+          <h4>Existing Named Ranges:</h4>
+          <div style={{ maxHeight: '200px', overflowY: 'auto', border: `1px solid ${currentTheme.border}`, borderRadius: '4px', padding: '5px' }}>
+            {namedRanges.length === 0 ? (
+              <p style={{ color: currentTheme.textLight }}>No named ranges defined.</p>
+            ) : (
+              namedRanges.map(nr => (
+                <div key={nr.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', borderBottom: `1px dashed ${currentTheme.border}` }}>
+                  <span style={{ color: currentTheme.text }}>
+                    {nr.name}: {getCellName(nr.range.x, nr.range.y)}:{getCellName(nr.range.x + nr.range.width - 1, nr.range.y + nr.range.height - 1)}
+                  </span>
+                  <div>
+                    <button onClick={() => editNamedRange(nr.id)} style={{ padding: "4px 8px", background: currentTheme.activeTabBg, color: currentTheme.text, border: `1px solid ${currentTheme.border}`, borderRadius: "4px", cursor: "pointer", marginRight: '5px' }}>Edit</button>
+                    <button onClick={() => deleteNamedRange(nr.id)} style={{ padding: "4px 8px", background: "#f44336", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Delete</button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: '10px' }}>
+            <button onClick={() => {
+              setShowNamedRangesModal(false);
+              setNewNamedRangeName('');
+              setNewNamedRangeRef('');
+              setEditingNamedRangeId(null);
+            }} style={{ padding: "8px 12px", background: "#f44336", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Close</button>
+          </div>
+        </div>
+      )}
+
+
+      {/* Find Modal */}
+      {showFindModal && (
+        <div style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          backgroundColor: currentTheme.bg,
+          padding: "20px",
+          borderRadius: "8px",
+          boxShadow: currentTheme.shadow,
+          zIndex: 2000,
+          display: "flex",
+          flexDirection: "column",
+          gap: "10px",
+          minWidth: '300px',
+          color: currentTheme.text,
+        }}>
+          <h3>Find and Replace in Sheet</h3>
+          <input
+            type="text"
+            value={findSearchTerm}
+            onChange={(e) => setFindSearchTerm(e.target.value)}
+            placeholder="Find what"
+            style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handleFind();
+              }
+            }}
+          />
+          <input
+            type="text"
+            value={findReplaceTerm}
+            onChange={(e) => setFindReplaceTerm(e.target.value)}
+            placeholder="Replace with"
+            style={{ padding: "8px", borderRadius: "4px", border: `1px solid ${currentTheme.border}`, color: currentTheme.text, backgroundColor: currentTheme.bg2 }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handleReplace();
+              }
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: 'center', gap: "10px" }}>
+            <div style={{ fontSize: '12px', color: currentTheme.textLight }}>
+              {findMatches.length > 0 ? `${findMatchIndex + 1} of ${findMatches.length}` : 'No matches'}
+            </div>
+            <div style={{ display: 'flex', gap: '5px' }}>
+              <button onClick={handleFindPrevious} disabled={findMatches.length === 0} style={{ padding: "6px 10px", background: currentTheme.bg2, color: currentTheme.text, border: `1px solid ${currentTheme.border}`, borderRadius: "4px", cursor: "pointer" }}>&#x25C0; Prev</button>
+              <button onClick={handleFindNext} disabled={findMatches.length === 0} style={{ padding: "6px 10px", background: currentTheme.bg2, color: currentTheme.text, border: `1px solid ${currentTheme.border}`, borderRadius: "4px", cursor: "pointer" }}>Next &#x25B6;</button>
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+            <button onClick={handleReplace} disabled={findCurrentMatch === null} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Replace</button>
+            <button onClick={handleReplaceAll} disabled={findMatches.length === 0} style={{ padding: "8px 12px", background: "#4CAF50", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Replace All</button>
+            <button onClick={() => {
+              setShowFindModal(false);
+              setFindSearchTerm('');
+              setFindReplaceTerm('');
+              setFindMatches([]);
+              setFindCurrentMatch(null);
+              setFindMatchIndex(0);
+            }} style={{ padding: "8px 12px", background: "#f44336", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}>Close</button>
+          </div>
+        </div>
+      )}
+
 
       <div style={{ flexGrow: 1, overflow: 'hidden' }}
         /* Removed onContextMenu from here as requested */
       >
         <DataEditor
+          key={dataUpdateKey} // Added key to force re-render on data/sort/filter changes
           columns={columns}
-          rows={NUM_ROWS}
+          rows={getDisplayedData.length} // Use the length of the displayed data
           rowMarkers="both"
           getCellContent={getCellContent}
           onCellEdited={onCellEdited}
           gridSelection={selection}
           drawCell={customDrawCell}
-          ref={gridRef} 
+          ref={gridRef}
           onColumnResize={onColumnResize}
-          
+          // Removed freezeColumns={frozenColumns}
+          // Removed freezeRows={frozenRows}
+
          onGridSelectionChange={(sel) => {
   setSelection(sel);
   if (sel.current) {
@@ -2159,16 +3374,28 @@ const applyCommentToCell = () => {
                 rangeStack: [],
               },
             });
-            const currentCell = currentSheetData[cell[1]]?.[cell[0]];
-            if (currentCell) {
-              setFormulaInput(currentCell.formula || currentCell.value);
+            // When a cell is activated, update the formula input with its current content
+            // Need to get the original row index for the active cell to fetch its data
+            const originalRowIndex = getDisplayedData[cell[1]]?.originalRowIndex;
+            if (originalRowIndex !== undefined && originalRowIndex !== -1) {
+              const currentCell = currentSheetData[originalRowIndex]?.[cell[0]];
+              if (currentCell) {
+                setFormulaInput(currentCell.formula || currentCell.value);
+              } else {
+                setFormulaInput("");
+              }
             } else {
               setFormulaInput("");
             }
           }}
           onFillPattern={onFillPattern}
           rowHeight={(row) => {
-    const rowCells = sheets[activeSheet][row];
+    // Need to get the original row index to determine height based on original data
+    const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+    if (originalRowIndex === undefined || originalRowIndex === -1) {
+      return 28; // Default height for padded rows
+    }
+    const rowCells = sheets[activeSheet][originalRowIndex]; // Still use original sheets data for row height
     const maxFontSize = rowCells.reduce((max, cell) => {
       const size = cell?.fontSize || 14;
       return Math.max(max, size);
@@ -2189,9 +3416,12 @@ const applyCommentToCell = () => {
     e.preventDefault();
     const copiedData: any[][] = [];
     for (let row = startY; row <= endY; row++) {
+      const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+      if (originalRowIndex === undefined || originalRowIndex === -1) continue;
+
       const rowData: any[] = [];
       for (let col = startX; col <= endX; col++) {
-        rowData.push(sheets[activeSheet][row]?.[col] ?? {
+        rowData.push(sheets[activeSheet][originalRowIndex]?.[col] ?? {
           value: "",
           background: "",
         });
@@ -2210,17 +3440,20 @@ const applyCommentToCell = () => {
         const newSheets = JSON.parse(JSON.stringify(sheets)); // deep copy
 
         for (let rowOffset = 0; rowOffset < copiedData.length; rowOffset++) {
+          const targetRowDisplayIndex = startY + rowOffset;
+          const originalTargetRowIndex = getDisplayedData[targetRowDisplayIndex]?.originalRowIndex;
+          if (originalTargetRowIndex === undefined || originalTargetRowIndex === -1) continue;
+
           for (let colOffset = 0; colOffset < copiedData[rowOffset].length; colOffset++) {
-            const targetRow = startY + rowOffset; // startY is accessible here
-            const targetCol = startX + colOffset; // startX is accessible here
-            if (newSheets[activeSheet][targetRow] && newSheets[activeSheet][targetRow][targetCol]) {
-              newSheets[activeSheet][targetRow][targetCol] = {
+            const targetCol = startX + colOffset;
+            if (newSheets[activeSheet][originalTargetRowIndex] && newSheets[activeSheet][originalTargetRowIndex][targetCol]) {
+              newSheets[activeSheet][originalTargetRowIndex][targetCol] = {
                 fontSize: 14,
                 bold: false,
                 italic: false,
                 underline: false,
                 strikethrough: false, // Ensure default for strikethrough
-                alignment: "left", 
+                alignment: "left",
                 ...copiedData[rowOffset][colOffset], // paste value + background
               };
             }
@@ -2228,6 +3461,7 @@ const applyCommentToCell = () => {
         }
         pushToUndoStack(sheets);
         setSheets(newSheets);
+        setDataUpdateKey(prev => prev + 1); // Data changed
       } catch (err) {
         console.warn("Invalid clipboard format");
       }
@@ -2241,16 +3475,19 @@ const applyCommentToCell = () => {
     const newSheets = JSON.parse(JSON.stringify(sheets));
 
     for (let row = startY; row <= endY; row++) {
+      const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+      if (originalRowIndex === undefined || originalRowIndex === -1) continue;
+
       const rowData: any[] = [];
       for (let col = startX; col <= endX; col++) {
-        const cell = newSheets[activeSheet][row]?.[col] ?? {
+        const cell = newSheets[activeSheet][originalRowIndex]?.[col] ?? {
           value: "",
           background: "",
         };
         rowData.push(cell);
 
         // Clear the cell
-        newSheets[activeSheet][row][col] = {
+        newSheets[activeSheet][originalRowIndex][col] = {
           value: "",
           background: "",
           fontSize: 14,
@@ -2258,7 +3495,7 @@ const applyCommentToCell = () => {
           italic: false,
           underline: false,
           strikethrough: false, // Ensure default for strikethrough
-          alignment: "left", 
+          alignment: "left",
         };
       }
       copiedData.push(rowData);
@@ -2267,20 +3504,53 @@ const applyCommentToCell = () => {
     navigator.clipboard.writeText(JSON.stringify(copiedData));
     pushToUndoStack(sheets);
     setSheets(newSheets);
+    setDataUpdateKey(prev => prev + 1); // Data changed
   }
 }}
 
 
         />
       </div>
+      {/* Removed old contextMenu as it's replaced by Edit menu */}
+      {/* {contextMenu?.visible && (
+        <div
+          style={{
+            position: "fixed",
+            top: contextMenu.y,
+            left: contextMenu.x,
+            background: "#fff",
+            border: "1px solid #ccc",
+            borderRadius: "4px",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+            zIndex: 9999,
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button style={menuItem} onClick={() => {
+            insertRowAt(contextMenu.targetRow);
+            setContextMenu(null);
+          }}> Add Row Above</button>
+
+          <button style={menuItem} onClick={() => {
+            insertRowAt(contextMenu.targetRow + 1);
+            setContextMenu(null);
+          }}>Add Row Below</button>
+
+          <button style={menuItem} onClick={() => {
+            deleteRows(contextMenu.targetRow, 1);
+            setContextMenu(null);
+          }}>Delete Row</button>
+        </div>
+      )} */}
+
       <div style={{
         padding: "10px",
-        borderTop: "1px solid #dadce0", // Google-like border
+        borderTop: `1px solid ${currentTheme.border}`, // Google-like border
         display: "flex",
         alignItems: "center",
         overflowX: "auto",
         flexShrink: 0,
-        backgroundColor: '#f8f9fa', // Light grey background
+        backgroundColor: currentTheme.bg2, // Light grey background
       }}>
         <div style={{ display: "flex", alignItems: "center" }}>
           {Object.keys(sheets).map((sheetName) => (
@@ -2288,16 +3558,16 @@ const applyCommentToCell = () => {
               key={sheetName}
               style={{
                 padding: "8px 12px",
-                marginRight: "2px", 
+                marginRight: "2px",
                 cursor: "pointer",
-                backgroundColor: activeSheet === sheetName ? "#e8eaed" : "transparent", // Highlight active tab
+                backgroundColor: activeSheet === sheetName ? currentTheme.activeTabBg : "transparent", // Highlight active tab
                 border: "1px solid transparent", // Transparent border
-                borderBottom: activeSheet === sheetName ? "2px solid #1a73e8" : "1px solid #dadce0", // Blue underline for active
+                borderBottom: activeSheet === sheetName ? `2px solid ${currentTheme.activeTabBorder}` : `1px solid ${currentTheme.border}`, // Blue underline for active
                 borderRadius: "4px 4px 0 0", // Rounded top corners
                 display: "inline-flex",
                 alignItems: "center",
                 whiteSpace: "nowrap",
-                color: activeSheet === sheetName ? "#1a73e8" : "#5f6368", // Text color
+                color: activeSheet === sheetName ? currentTheme.activeTabBorder : currentTheme.textLight, // Text color
                 fontWeight: activeSheet === sheetName ? "bold" : "normal",
                 transition: 'background-color 0.2s, border-bottom 0.2s',
                 minWidth: '80px',
@@ -2315,7 +3585,7 @@ const applyCommentToCell = () => {
                   onChange={(e) => setNewSheetName(e.target.value)}
                   onBlur={() => handleSaveSheetName(sheetName)}
                   onKeyDown={(e) => handleSheetNameInputKeyDown(e, sheetName)}
-                  style={{ border: "none", background: "transparent", outline: "none", width: "80px", textAlign: 'center' }}
+                  style={{ border: "none", background: "transparent", outline: "none", width: "80px", textAlign: 'center', color: currentTheme.text }}
                   autoFocus
                 />
               ) : (
@@ -2332,7 +3602,7 @@ const applyCommentToCell = () => {
                         background: "none",
                         border: "none",
                         cursor: "pointer",
-                        color: "#888",
+                        color: currentTheme.textLight,
                         fontSize: "14px",
                       }}
                     >
@@ -2347,9 +3617,9 @@ const applyCommentToCell = () => {
             onClick={handleAddSheet}
             style={{
               padding: "8px 12px",
-              background: "#e8eaed", // Light grey for add button
-              color: "#5f6368",
-              border: "1px solid #dadce0",
+              background: currentTheme.activeTabBg, // Light grey for add button
+              color: currentTheme.textLight,
+              border: `1px solid ${currentTheme.border}`,
               borderRadius: "4px",
               cursor: "pointer",
               flexShrink: 0,

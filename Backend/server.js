@@ -22,7 +22,7 @@ app.use('/api/sheets', sheetRoutes);
 const server=http.createServer(app);
 const io=new Server(server,{
     cors:{
-    origin:"https://voluble-donut-c728cf.netlify.app",
+    origin: process.env.CLIENT_URI,
     methods: ["GET", "POST"]
     },
 })
