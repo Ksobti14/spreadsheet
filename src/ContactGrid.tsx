@@ -19,8 +19,9 @@ import autoTable from "jspdf-autotable";
 import {io} from "socket.io-client"
 const NUM_ROWS = 7000;
 const NUM_COLUMNS = 100;
-const socket=io("https://testsheet-ui6b.onrender.com",{
-   transports:["polling"]
+const socket=io("http://localhost:5000",{
+   transports:["websocket","polling"],
+   withCredentials:true
 });
 const getExcelColumnName = (colIndex: number): string => {
   let columnName = "";
@@ -315,47 +316,124 @@ const FormulaOverlay: React.FC<{
   onCancel: () => void;
 }> = ({ location, value, onChange, onCommit, onCancel }) => {
   const [localValue, setLocalValue] = useState(value);
+  const [editingCell, setEditingCell] = useState<Item | null>(null);
+const [currentArgIndex, setCurrentArgIndex] = useState<number | null>(null);
+const [currentFunction, setCurrentFunction] = useState<string | null>(null);
+
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // ✅ Focus input on mount
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.setSelectionRange(localValue.length, localValue.length);
   }, []);
+  useEffect(() => {
+  if (!localValue.startsWith("=")) {
+    setCurrentFunction(null);
+    setCurrentArgIndex(null);
+    return;
+  }
 
+  const cursorPos = inputRef.current?.selectionStart ?? localValue.length;
+  const beforeCursor = localValue.slice(0, cursorPos);
+
+  const funcMatch = beforeCursor.match(/^=(\w+)\(/i);
+  if (funcMatch) {
+    const fn = funcMatch[1].toUpperCase();
+    const argsPart = beforeCursor.slice(funcMatch[0].length);
+    const argIndex = argsPart.split(",").length - 1;
+
+    setCurrentFunction(fn);
+    setCurrentArgIndex(argIndex);
+  } else {
+    setCurrentFunction(null);
+    setCurrentArgIndex(null);
+  }
+}, [localValue]);
+
+useEffect(() => {
+  setEditingCell(location); // enter edit mode
+  return () => setEditingCell(null); // exit edit mode on unmount
+}, []);
+
+  // ✅ Handle input changes
   const handleInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setLocalValue(val);
     onChange(val);
+    
   };
 
+  // ✅ Handle Enter/Esc
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
+      e.preventDefault();
       onChange(localValue);
       onCommit();
     } else if (e.key === "Escape") {
+      e.preventDefault();
+      setLocalValue(value);
       onCancel();
     }
   };
+const getParamHint = (fn: string, index: number | null) => {
+  if (index === null) return "";
+
+  const paramHints: Record<string, string[]> = {
+    IF: ["condition", "value_if_true", "value_if_false"],
+    ROUND: ["number", "num_digits"],
+    POWER: ["base", "exponent"],
+    SUM: ["number1", "number2", "..."],
+    AVERAGE: ["number1", "number2", "..."],
+    MIN: ["number1", "number2", "..."],
+    MAX: ["number1", "number2", "..."],
+    COUNT: ["value1", "value2", "..."],
+  };
+
+  const params = paramHints[fn];
+  if (!params) return "";
+
+  const safeIndex = Math.min(index, params.length - 1);
+  return `→ ${params[safeIndex]}`;
+};
 
   return (
+  <div style={{ position: "absolute", top: 0, left: 0, zIndex: 9999 }}>
     <input
       ref={inputRef}
       value={localValue}
       onChange={handleInput}
       onKeyDown={handleKeyDown}
+      className="formula-input"
       style={{
-        width: "100%",
-        height: "100%",
+        display: "block",
+        padding: "4px 8px",
         fontSize: "14px",
-        border: "none",
-        outline: "none",
-        padding: "0 6px",
-        background: "#fff",
+        border: "1px solid #ccc",
+        borderRadius: "4px",
+        width: "250px",
       }}
     />
-  );
-};
+    {currentFunction && (
+      <div style={{
+        marginTop: "4px",
+        fontSize: "12px",
+        background: "#f0f0f0",
+        padding: "6px 10px",
+        borderRadius: "4px",
+        color: "#333",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+        width: "fit-content",
+        maxWidth: "300px"
+      }}>
+        Editing: <strong>{currentFunction}</strong> {" "}
+        {getParamHint(currentFunction, currentArgIndex)}
+      </div>
+    )}
+  </div>
+);
 
+};
 
 const ContactGrid: React.FC = () => {
   const [showDropdown, setShowDropdown] = useState(false);
@@ -820,6 +898,9 @@ const ContactGrid: React.FC = () => {
             const height = Math.abs(sy - ey) + 1;
             setHighlightRange({ x, y, width, height });
             console.log(`Highlighting range: [${x},${y}] to [${x + width -1},${y + height -1}]`);
+
+            setDataUpdateKey(prev => prev + 1); 
+            gridRef.current?.scrollTo(y,x);
             break;
           }
         }
@@ -1207,6 +1288,19 @@ const handleAlignmentChange = (align: "left" | "center" | "right") => {
 
 const customDrawCell = useCallback((args: any) => {
   const { ctx, theme, rect, col, row, cell } = args;
+  if (highlightRange) {
+    const inX = col >= highlightRange.x && col < highlightRange.x + highlightRange.width;
+    const inY = row >= highlightRange.y && row < highlightRange.y + highlightRange.height;
+
+    if (inX && inY) {
+      ctx.fillStyle = "rgba(30, 144, 255, 0.2)"; // Light blue background
+      ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+
+      ctx.strokeStyle = "dodgerblue"; // Blue border
+      ctx.lineWidth = 2;
+      ctx.strokeRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
+    }
+  }
   if (cell.kind !== GridCellKind.Text) return false;
 
   // Use getDisplayedData for cell data
@@ -1742,6 +1836,7 @@ const [showViewDropdown, setShowViewDropdown] = useState(false); // New state fo
 
 const [showImportDropdown, setShowImportDropdown] = useState(false);
 const [showExportDropdown, setShowExportDropdown] = useState(false);
+const [editingCell, setEditingCell] = useState<Item | null>(null);
 
 const [showLinkInput, setShowLinkInput] = useState(false);
 const [linkValue, setLinkValue] = useState('');
@@ -3343,7 +3438,6 @@ const deleteNamedRange = (id: string) => {
         /* Removed onContextMenu from here as requested */
       >
         <DataEditor
-          key={dataUpdateKey} // Added key to force re-render on data/sort/filter changes
           columns={columns}
           rows={getDisplayedData.length} // Use the length of the displayed data
           rowMarkers="both"
@@ -3353,9 +3447,7 @@ const deleteNamedRange = (id: string) => {
           drawCell={customDrawCell}
           ref={gridRef}
           onColumnResize={onColumnResize}
-          // Removed freezeColumns={frozenColumns}
-          // Removed freezeRows={frozenRows}
-
+          
          onGridSelectionChange={(sel) => {
   setSelection(sel);
   if (sel.current) {
@@ -3410,6 +3502,37 @@ const deleteNamedRange = (id: string) => {
   const endX = Math.max(range.x, range.x + range.width - 1);
   const startY = Math.min(range.y, range.y + range.height - 1);
   const endY = Math.max(range.y, range.y + range.height - 1);
+ if (e.key === "Enter") {
+      e.preventDefault();
+      const cell = selection.current.cell;
+      if (cell) {
+        
+      }
+    }
+    if (e.key === "Escape") {
+  e.preventDefault();
+  const cell = selection.current?.cell;
+  if (cell) {
+    const [col, row] = cell;
+    const originalRowIndex = getDisplayedData[row]?.originalRowIndex;
+
+    if (
+      originalRowIndex !== undefined &&
+      originalRowIndex !== -1 &&
+      sheets[activeSheet][originalRowIndex]
+    ) {
+      const newSheets = JSON.parse(JSON.stringify(sheets)); // Deep copy
+      newSheets[activeSheet][originalRowIndex][col] = {
+        ...newSheets[activeSheet][originalRowIndex][col],
+        value: "",
+        formula: "",
+      };
+      pushToUndoStack(sheets); // Optional: add to undo stack
+      setSheets(newSheets);
+      setDataUpdateKey((prev) => prev + 1); // Trigger re-render
+    }
+  }
+}
 
   // ✅ Ctrl+C: Copy (value + background)
   if (e.ctrlKey && e.key === "c") {
